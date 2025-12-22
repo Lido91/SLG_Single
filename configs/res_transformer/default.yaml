@@ -1,0 +1,17 @@
+# ResidualTransformer (Stage 3) configuration
+target: mGPT.archs.residual_transformer.ResidualTransformer
+params:
+  num_tokens: 512             # Codebook size (must match RVQ-VAE)
+  code_dim: 512               # Token embedding dimension
+  latent_dim: 384             # Transformer hidden dimension
+  ff_size: 1024               # Feedforward dimension
+  num_layers: 8               # Number of transformer layers
+  num_heads: 6                # Number of attention heads
+  dropout: 0.0                # Dropout rate (higher than MaskTransformer)
+  cond_drop_prob: 0.0       # Classifier-free guidance dropout
+  clip_dim: 512               # CLIP embedding dimension
+  clip_version: 'ViT-B/32'    # CLIP model version
+  num_quantizers: 6           # Number of RVQ quantizers
+  shared_codebook: false      # Whether RVQ uses shared codebook
+  share_weight: false          # Share embedding and output projection weights
+  cond_mode: 'text'           # Conditioning mode

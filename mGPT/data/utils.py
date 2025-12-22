@@ -36,10 +36,19 @@ def humanml3d_collate(batch):
         notnone_batches.sort(key=lambda x: x[5], reverse=True)
 
     # Motion only
+    # Keep dtype: use .long() for tokens (LM stage), .float() for features (VAE stage)
+    motion_batch = [b[1] for b in notnone_batches]
+    # Check if motion data is long (tokens) or float (features) based on first element
+    if motion_batch[0].dtype in [torch.long, torch.int, torch.int32, torch.int64]:
+        collated_motion = collate_tensors(motion_batch)  # Keep as long for tokens
+    else:
+        collated_motion = collate_tensors([m.float() for m in motion_batch])  # Convert to float for features
+
     adapted_batch = {
-        "motion":
-        collate_tensors([torch.tensor(b[1]).float() for b in notnone_batches]),
+        "motion": collated_motion,
         "length": [b[2] for b in notnone_batches],
+        "src": [b[9] for b in notnone_batches],
+        "name": [b[3] for b in notnone_batches]
     }
 
     # Text and motion
@@ -65,7 +74,7 @@ def humanml3d_collate(batch):
         })
 
     # Tasks
-    if len(notnone_batches[0]) == 9:
+    if len(notnone_batches[0]) >= 9:
         adapted_batch.update({"tasks": [b[8] for b in notnone_batches]})
 
     return adapted_batch

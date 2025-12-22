@@ -1,10 +1,11 @@
 SEED_VALUE: 1234 # Seed value
-DEBUG: True # Debug mode
+DEBUG: False # Debug mode
 FULL_CONFIG: false
+PRECISION: null
 
 TRAIN:
   SPLIT: 'train' # Training split name
-  NUM_WORKERS: 8 # Number of workers
+  NUM_WORKERS: 16 # Number of workers
   BATCH_SIZE: 8 # Size of batches
   END_EPOCH: 2000 # End epoch
 
@@ -28,13 +29,13 @@ TRAIN:
 EVAL:
   SPLIT: 'val' # Validation split name
   BATCH_SIZE: 16 # Validation Batch size
-  NUM_WORKERS: 8 # Validation Batch size
+  NUM_WORKERS: 16 # Validation Batch size
 
 TEST:
   CHECKPOINTS: '' # Pretrained model path
   SPLIT: 'test' # Testing split name
   BATCH_SIZE: 16 # Testing Batch size
-  NUM_WORKERS: 8 # Testing Batch size
+  NUM_WORKERS: 16 # Testing Batch size
 
   SAVE_PREDICTIONS: False # Weather to save predictions
   COUNT_TIME: False # Weather to count time during test
@@ -57,7 +58,7 @@ model:
 
 LOSS:
   LAMBDA_REC: 1.0 # Lambda for reconstruction losses
-  LAMBDA_JOINT: 1.0 # Lambda for joint losses
+  LAMBDA_JOINT: 0.0 # Lambda for joint losses
 
   LAMBDA_LATENT: 1e-5 # Lambda for latent losses
   LAMBDA_KL: 1e-5 # Lambda for kl losses
@@ -127,7 +128,7 @@ DEMO:
 
 LOGGER:
   VAL_EVERY_STEPS: 10
-  LOGGERS: ['tensorboard', 'wandb']
+  LOGGERS: ['wandb']
   TENSORBOARD:
     target: pytorch_lightning.loggers.TensorBoardLogger
     params:

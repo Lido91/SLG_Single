@@ -9,7 +9,7 @@ from mGPT.data.build_data import build_data
 from mGPT.models.build_model import build_model
 from mGPT.utils.logger import create_logger
 from mGPT.utils.load_checkpoint import load_pretrained, load_pretrained_vae
-
+torch.set_float32_matmul_precision('high')  # or 'high'
 def main():
     # Configs
     cfg = parse_args(phase="train")  # parse config file
@@ -19,7 +19,7 @@ def main():
     logger.info(OmegaConf.to_yaml(cfg))  # print config file
 
     # Seed
-    pl.seed_everything(cfg.SEED_VALUE)
+    # pl.seed_everything(cfg.SEED_VALUE)
 
     # Environment Variables
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -53,6 +53,7 @@ def main():
         logger=pl_loggers,
         callbacks=callbacks,
         check_val_every_n_epoch=cfg.LOGGER.VAL_EVERY_STEPS,
+        num_sanity_val_steps=2 if cfg.get('DEBUG', False) else 0,  # Skip sanity check unless debugging
         accelerator=cfg.ACCELERATOR,
         devices=cfg.DEVICE,
         num_nodes=cfg.NUM_NODES,

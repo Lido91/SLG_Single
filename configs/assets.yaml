@@ -20,7 +20,7 @@ DATASET:
 
 METRIC:
   TM2T:
-    t2m_path: deps/t2m/ # path for tm2t evaluator
+    t2m_path: prepare/deps/t2m/t2m
 
 model:
   whisper_path: deps/whisper-large-v2 # path for whisper model, webui only

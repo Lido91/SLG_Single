@@ -136,10 +136,13 @@ class MotionGPT(BaseModel):
 
     @torch.no_grad()
     def val_t2m_forward(self, batch):
-        feats_ref = batch["motion"]
+        # SOKE's approach: batch["motion"] contains raw poses from Text2MotionDatasetEval
+        feats_ref = batch["motion"]  # Raw motion features (B, T, 133) from dataset
         texts = batch["text"]
         lengths = batch["length"]
         tasks = None
+        B = feats_ref.shape[0]
+
         if self.trainer.datamodule.is_mm:
             texts = texts * self.hparams.cfg.METRIC.MM_NUM_REPEATS
             feats_ref = feats_ref.repeat_interleave(
@@ -161,35 +164,39 @@ class MotionGPT(BaseModel):
             instructions = json.load(open(instructions, 'r'))
             tasks = [instructions["Text-to-Motion"]["t2m"]] * len(texts)
 
-        min_len = lengths.copy()
-        # Forward
-        outputs = self.lm.generate_conditional(texts,
-                                               lengths=lengths,
-                                               stage='test',
-                                               tasks=tasks)
+        # Generate motion tokens from text
+        outputs_tokens = self.lm.generate_conditional(texts,
+                                                      lengths=lengths,
+                                                      stage='test',
+                                                      tasks=tasks)
 
-        # Motion Decode
-        feats_rst = torch.zeros_like(feats_ref)
+        # SOKE's approach: allocate based on max GENERATED token length
+        max_len = max(map(len, outputs_tokens))
+        C = self.datamodule.nfeats
+        feats_rst = torch.zeros(B, max_len * 4, C).to(feats_ref.device)  # Each token = 4 frames
 
-        for i in range(len(texts)):
-            outputs[i] = torch.clamp(outputs[i],
-                                     0,
-                                     self.hparams.codebook_size - 1,
-                                     out=None)
+        # Decode generated tokens and track lengths
+        lengths_rst = []
+        for i in range(B):
+            outputs_tokens[i] = torch.clamp(outputs_tokens[i], 0, self.hparams.codebook_size - 1, out=None)
 
-            if len(outputs[i]) > 1:
-                motion = self.vae.decode(outputs[i])
+            if len(outputs_tokens[i]) > 1:
+                # Check if tokens have multiple quantizers (e.g., from HierarchicalRVQGPT)
+                if outputs_tokens[i].dim() == 2 and outputs_tokens[i].shape[-1] > 1:
+                    # Multi-quantizer tokens (T, n_quantizers) - use decode_partial
+                    motion = self.vae.decode_partial(outputs_tokens[i])
+                else:
+                    # Single quantizer tokens (T,) - use standard decode
+                    motion = self.vae.decode(outputs_tokens[i])
             else:
-                motion = torch.zeros_like(feats_ref[i:i + 1, ...])
+                motion = torch.zeros(1, 4, C).to(feats_ref.device)
 
-            min_len[i] = min(motion.shape[1], lengths[i])
-
-            # Cut Motion
-            feats_rst[i:i + 1, :min_len[i], ...] = motion[:, :lengths[i]]
+            feats_rst[i:i+1, :motion.shape[1], :] = motion
+            lengths_rst.append(motion.shape[1])
 
         # Recover joints for evaluation
-        joints_ref = self.feats2joints(feats_ref)
-        joints_rst = self.feats2joints(feats_rst)
+        vertices_ref, joints_ref = self.feats2joints(feats_ref)
+        vertices_rst, joints_rst = self.feats2joints(feats_rst)
 
         # Renorm for evaluation
         feats_ref = self.datamodule.renorm4t2m(feats_ref)
@@ -201,8 +208,9 @@ class MotionGPT(BaseModel):
             "m_rst": feats_rst,
             "joints_ref": joints_ref,
             "joints_rst": joints_rst,
-            "length": min_len
-            # "length": lengths
+            "lengths_rst": lengths_rst,  # Generated motion lengths
+            "vertices_ref": vertices_ref,
+            "vertices_rst": vertices_rst,
         }
 
         return rs_set
@@ -302,10 +310,23 @@ class MotionGPT(BaseModel):
     def train_vae_forward(self, batch):
         # batch detach
         feats_ref = batch["motion"]
-        joints_ref = self.feats2joints(feats_ref)
+
+        # feats2joints returns (vertices, joints) for H2S dataset, just joints for others
+        feats2joints_result_ref = self.feats2joints(feats_ref)
+        if isinstance(feats2joints_result_ref, tuple):
+            _, joints_ref = feats2joints_result_ref
+        else:
+            joints_ref = feats2joints_result_ref
+
         # motion encode & decode
         feats_rst, loss_commit, perplexity = self.vae(feats_ref)
-        joints_rst = self.feats2joints(feats_rst)
+
+        feats2joints_result_rst = self.feats2joints(feats_rst)
+        if isinstance(feats2joints_result_rst, tuple):
+            _, joints_rst = feats2joints_result_rst
+        else:
+            joints_rst = feats2joints_result_rst
+
         # return set
         rs_set = {
             "m_ref": feats_ref,
@@ -350,8 +371,19 @@ class MotionGPT(BaseModel):
         #         self.codeFrequency.cpu().numpy())
 
         # Recover joints for evaluation
-        joints_ref = self.feats2joints(feats_ref)
-        joints_rst = self.feats2joints(feats_rst)
+        # feats2joints returns (vertices, joints) for H2S dataset
+        feats2joints_result_ref = self.feats2joints(feats_ref)
+        feats2joints_result_rst = self.feats2joints(feats_rst)
+
+        # Handle both return formats: (vertices, joints) or just joints
+        if isinstance(feats2joints_result_ref, tuple):
+            vertices_ref, joints_ref = feats2joints_result_ref
+            vertices_rst, joints_rst = feats2joints_result_rst
+        else:
+            joints_ref = feats2joints_result_ref
+            joints_rst = feats2joints_result_rst
+            vertices_ref = None
+            vertices_rst = None
 
         # Renorm for evaluation
         feats_ref = self.datamodule.renorm4t2m(feats_ref)
@@ -363,132 +395,91 @@ class MotionGPT(BaseModel):
             "joints_ref": joints_ref,
             "m_rst": feats_rst,
             "joints_rst": joints_rst,
+            "vertices_ref": vertices_ref,
+            "vertices_rst": vertices_rst,
             "length": lengths,
         }
 
         return rs_set
 
-
     def allsplit_step(self, split: str, batch, batch_idx):
         # Compute the losses
         loss = None
-
+        lengths = batch['length']
+        src = batch['src']
+        name = batch['name']
+        # print('task: ', self.hparams.task)
         if self.hparams.stage == "vae" and split in ["train", "val"]:
             rs_set = self.train_vae_forward(batch)
             loss = self._losses['losses_' + split].update(rs_set)
-        elif self.hparams.stage in ["lm_instruct", "lm_pretrain"
-                                    ] and split in ["train"]:
+        elif self.hparams.stage in ["lm_instruct", "lm_pretrain", "lm_rvq_hierarchical"] and split in ["train"]:
             rs_set = self.train_lm_forward(batch)
             loss = self._losses['losses_' + split].update(rs_set)
-        elif self.hparams.stage == 'lm_rl' and split in ['train']:
-            rs_set = self.train_rl_forward(batch)
-            loss = None
 
         # Compute the metrics
         if split in ["val", "test"]:
             if self.hparams.stage == "vae":
                 rs_set = self.val_vae_forward(batch, split)
-            elif self.hparams.stage in ["lm_instruct", "lm_pretrain", "lm_rl"]:
+                getattr(self.metrics,'MRMetrics').update(
+                            feats_rst=rs_set["m_rst"],
+                            feats_ref=rs_set["m_ref"],
+                            joints_rst=rs_set["joints_rst"],
+                            joints_ref=rs_set["joints_ref"],
+                            vertices_rst=rs_set["vertices_rst"],
+                            vertices_ref=rs_set["vertices_ref"], 
+                            lengths=lengths,
+                            src=src,
+                            name=name
+                        )
+            elif self.hparams.stage in ["lm_instruct", "lm_pretrain", "lm_rl", "lm_rvq_hierarchical"]:
                 if self.hparams.task == "t2m":
                     rs_set = self.val_t2m_forward(batch)
+                    # Use the configured metric (MRMetrics or TM2TMetrics)
+                    metric_name = self.hparams.metrics_dict[0] if self.hparams.metrics_dict else 'MRMetrics'
+                    if hasattr(self.metrics, metric_name):
+                        # MRMetrics only accepts: feats, joints, vertices, lengths, src, name
+                        # TM2TMetrics accepts additional: lengths_rst, split
+                        if metric_name == 'MRMetrics':
+                            getattr(self.metrics, metric_name).update(
+                                    feats_rst=rs_set["m_rst"],
+                                    feats_ref=rs_set["m_ref"],
+                                    joints_rst=rs_set["joints_rst"],
+                                    joints_ref=rs_set["joints_ref"],
+                                    vertices_rst=rs_set["vertices_rst"],
+                                    vertices_ref=rs_set["vertices_ref"],
+                                    lengths=rs_set['lengths_rst'],  # Use generated lengths for MR
+                                    src=src,
+                                    name=name
+                                )
+                        else:  # TM2TMetrics
+                            getattr(self.metrics, metric_name).update(
+                                    feats_rst=rs_set["m_rst"],
+                                    feats_ref=rs_set["m_ref"],
+                                    joints_rst=rs_set["joints_rst"],
+                                    joints_ref=rs_set["joints_ref"],
+                                    vertices_rst=rs_set["vertices_rst"],
+                                    vertices_ref=rs_set["vertices_ref"],
+                                    lengths=lengths,
+                                    lengths_rst=rs_set['lengths_rst'],
+                                    split=split,
+                                    src=src,
+                                    name=name
+                                )
                 elif self.hparams.task == "m2t":
-                    rs_set = self.val_m2t_forward(batch)
-                elif self.hparams.task in ["m2m", "pred", "inbetween"]:
-                    rs_set = self.val_m2m_forward(batch, self.hparams.task)
-
-            if self.hparams.task not in ["m2t"]:
-                # MultiModality evaluation sperately
-                if self.trainer.datamodule.is_mm:
-                    metrics_dicts = ['MMMetrics']
-                else:
-                    metrics_dicts = self.hparams.metrics_dict
-                    
-                if self.hparams.task not in ['pred', 'inbetween'] and 'PredMetrics' in metrics_dicts:
-                    metrics_dicts.remove('PredMetrics')
-
-                for metric in metrics_dicts:
-                    lengths = batch['length']
-                    if metric == "TemosMetric":
-                        getattr(self.metrics,
-                                metric).update(rs_set["joints_rst"],
-                                               rs_set["joints_ref"], lengths)
-                    elif metric == "TM2TMetrics":
-                        if self.hparams.stage in [
-                                "lm_instruct", "lm_pretrain", "lm_rl"
-                        ]:
-                            word_embs = batch['word_embs']
-                            pos_ohot = batch['pos_ohot']
-                            text_lengths = batch['text_len']
-                            if self.trainer.datamodule.is_mm:
-                                word_embs = word_embs.repeat_interleave(
-                                    self.hparams.cfg.METRIC.MM_NUM_REPEATS,
-                                    dim=0)
-                                pos_ohot = pos_ohot.repeat_interleave(
-                                    self.hparams.cfg.METRIC.MM_NUM_REPEATS,
-                                    dim=0)
-                                text_lengths = text_lengths.repeat_interleave(
-                                    self.hparams.cfg.METRIC.MM_NUM_REPEATS,
-                                    dim=0)
-                        else:
-                            word_embs = None
-                            pos_ohot = None
-                            text_lengths = None
-
-                        getattr(self.metrics, metric).update(
-                            feats_ref=rs_set["m_ref"],
-                            feats_rst=rs_set["m_rst"],
-                            lengths_ref=lengths,
-                            lengths_rst=rs_set['length'],
-                            word_embs=word_embs,
-                            pos_ohot=pos_ohot,
-                            text_lengths=text_lengths,
-                        )
-                    elif metric == "UncondMetrics":
-                        getattr(self.metrics, metric).update(
-                            recmotion_embeddings=rs_set["lat_rm"],
-                            gtmotion_embeddings=rs_set["lat_m"],
-                            lengths=lengths,
-                        )
-                    elif metric == "MRMetrics":
-                        getattr(self.metrics,
-                                metric).update(rs_set["joints_rst"],
-                                               rs_set["joints_ref"], lengths)
-                    elif metric == "PredMetrics":
-                        getattr(self.metrics,
-                                metric).update(rs_set["joints_rst"],
-                                               rs_set["joints_ref"], lengths)
-                    elif metric == "MMMetrics":
-                        # pass
-                        getattr(self.metrics,
-                                metric).update(rs_set["m_rst"],
-                                               rs_set['length'])
-                    else:
-                        raise TypeError(f"Not support this metric {metric}")
-
-            elif self.hparams.task == "m2t" and self.hparams.stage in [
-                    "lm_instruct", "lm_pretrain", "lm_rl"
-            ]:
-                self.hparams.metrics_dict = metrics_dicts = ['M2TMetrics']
-                for metric in metrics_dicts:
-                    if metric == "M2TMetrics":
-                        getattr(self.metrics, metric).update(
-                            feats_ref=rs_set["m_ref"],
-                            pred_texts=rs_set["t_pred"],
-                            gt_texts=batch["all_captions"],
-                            lengths=rs_set['length'],
-                            word_embs=batch["word_embs"],
-                            pos_ohot=batch["pos_ohot"],
-                            text_lengths=batch["text_len"],
-                        )
-
-        # return forward output rather than loss during test
+                    rs_set_m2t = self.val_m2t_forward(batch)
+                    getattr(self.metrics, 'M2TMetrics').update(
+                        pred_texts=rs_set_m2t["t_pred"],
+                        gt_texts=rs_set_m2t["t_ref"],
+                        lengths=rs_set_m2t['length'],
+                        src=src,
+                    )
         if split in ["test"]:
-            if self.hparams.task == "t2m":
-                return rs_set["joints_rst"], rs_set["length"], rs_set[
-                    "joints_ref"]
-                # pass
-            elif self.hparams.task == "m2t":
-                return rs_set["t_pred"], batch["length"]
-                # return batch["length"]
-
+            if self.hparams.stage == "vae":
+                # return rs_set["joints_rst"], rs_set["joints_ref"], rs_set["vertices_rst"], rs_set["vertices_ref"], rs_set["m_ref"], rs_set["m_rst"], batch["length"]
+                return {'name': name, 'feats_ref': rs_set["m_ref"], 'feats_rst': rs_set['m_rst'], 'lengths': batch['length'], 'lengths_rst': batch['length'], 'text': batch['text']}
+            elif "lm" in self.hparams.stage:
+                # return rs_set["joints_rst"], rs_set["joints_ref"], rs_set["vertices_rst"], rs_set["vertices_ref"], rs_set["m_ref"], rs_set["m_rst"], \
+                    # rs_set_m2t["t_pred"], rs_set_m2t["t_ref"], batch["length"]
+                return {'name': name, 'feats_ref': rs_set["m_ref"], 'feats_rst': rs_set['m_rst'], 'lengths': batch['length'], 'lengths_rst': rs_set['lengths_rst'], 'text': batch['text']}
+               
         return loss

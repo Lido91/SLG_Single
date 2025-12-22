@@ -38,33 +38,62 @@ def getCheckpointCallback(cfg, logger=None, **kwargs):
         "Diversity": "Metrics/Diversity",
         "MM dist": "Metrics/Matching_score",
         "Accuracy": "Metrics/accuracy",
+        "how2sign_DTW_MPJPE_PA_lhand": "Metrics/how2sign_DTW_MPJPE_PA_lhand",
+        "how2sign_DTW_MPJPE_PA_rhand": "Metrics/how2sign_DTW_MPJPE_PA_rhand",
+        "how2sign_DTW_MPJPE_PA_body": "Metrics/how2sign_DTW_MPJPE_PA_body",
+        "csl_DTW_MPJPE_PA_lhand": "Metrics/csl_DTW_MPJPE_PA_lhand",
+        "csl_DTW_MPJPE_PA_rhand": "Metrics/csl_DTW_MPJPE_PA_rhand",
+        "csl_DTW_MPJPE_PA_body": "Metrics/csl_DTW_MPJPE_PA_body",
+        "phoenix_DTW_MPJPE_PA_lhand": "Metrics/phoenix_DTW_MPJPE_PA_lhand",
+        "phoenix_DTW_MPJPE_PA_rhand": "Metrics/phoenix_DTW_MPJPE_PA_rhand",
+        "phoenix_DTW_MPJPE_PA_body": "Metrics/phoenix_DTW_MPJPE_PA_body",
+        "how2sign_MPVPE_PA_all": "Metrics/how2sign_MPVPE_PA_all",
+        "how2sign_MPJPE_PA_hand": "Metrics/how2sign_MPJPE_PA_hand",
+        "csl_MPVPE_PA_all": "Metrics/csl_MPVPE_PA_all",
+        "csl_MPJPE_PA_hand": "Metrics/csl_MPJPE_PA_hand",
+        "phoenix_MPVPE_PA_all": "Metrics/phoenix_MPVPE_PA_all",
+        "phoenix_MPJPE_PA_hand": "Metrics/phoenix_MPJPE_PA_hand",
+        "BLEU_1": "Metrics/Bleu_1",
+        "BLEU_2": "Metrics/Bleu_2",
+        "BLEU_3": "Metrics/Bleu_3",
+        "BLEU_4": "Metrics/Bleu_4",
+        "ROUGE_L": "Metrics/ROUGE_L",
     }
     callbacks.append(
         progressLogger(logger,metric_monitor=metric_monitor,log_every_n_steps=1))
 
-    # Save 10 latest checkpoints
+    # # Save latest checkpoints
+    # checkpointParams = {
+    #     'dirpath': os.path.join(cfg.FOLDER_EXP, "checkpoints"),
+    #     'filename': "{epoch}",
+    #     'monitor': "step",
+    #     'mode': "max",
+    #     'every_n_epochs': cfg.LOGGER.VAL_EVERY_STEPS,
+    #     'save_top_k': 8,
+    #     'save_last': True,
+    #     'save_on_train_epoch_end': True
+    # }
+    # callbacks.append(ModelCheckpoint(**checkpointParams))
+
+    # # Save checkpoint every n*10 epochs
+    # checkpointParams.update({
+    #     'every_n_epochs': cfg.LOGGER.VAL_EVERY_STEPS * 10,
+    #     'save_top_k': -1,
+    #     'save_last': False
+    # })
+    # callbacks.append(ModelCheckpoint(**checkpointParams))
+
     checkpointParams = {
         'dirpath': os.path.join(cfg.FOLDER_EXP, "checkpoints"),
         'filename': "{epoch}",
         'monitor': "step",
         'mode': "max",
-        'every_n_epochs': cfg.LOGGER.VAL_EVERY_STEPS,
-        'save_top_k': 8,
-        'save_last': True,
-        'save_on_train_epoch_end': True
+        'every_n_epochs': None,  #cfg.LOGGER.VAL_EVERY_STEPS,
+        'save_top_k': 1,
+        'save_last': True, #None,
+        'save_on_train_epoch_end': False
     }
-    callbacks.append(ModelCheckpoint(**checkpointParams))
-
-    # Save checkpoint every n*10 epochs
-    checkpointParams.update({
-        'every_n_epochs':
-        cfg.LOGGER.VAL_EVERY_STEPS * 10,
-        'save_top_k':
-        -1,
-        'save_last':
-        False
-    })
-    callbacks.append(ModelCheckpoint(**checkpointParams))
+    # callbacks.append(ModelCheckpoint(**checkpointParams))
 
     metrics = cfg.METRIC.TYPE
     metric_monitor_map = {
@@ -75,20 +104,46 @@ def getCheckpointCallback(cfg, logger=None, **kwargs):
             },
         },
         'TM2TMetrics': {
-            'Metrics/FID': {
-                'abbr': 'FID',
+            'Metrics/how2sign_DTW_MPJPE_PA_lhand': {
+                'abbr': 'how2sign_DTW_MPJPE_PA_lhand',
                 'mode': 'min'
             },
-            'Metrics/R_precision_top_3': {
-                'abbr': 'R3',
+        },
+        'M2TMetrics': {
+            'Metrics/Bleu_4': {
+                'abbr': 'BLEU_4',
                 'mode': 'max'
-            }
+            },
+            'Metrics/ROUGE_L': {
+                'abbr': 'ROUGE_L',
+                'mode': 'max'
+            },
         },
         'MRMetrics': {
-            'Metrics/MPJPE': {
-                'abbr': 'MPJPE',
+            'Metrics/how2sign_MPJPE_PA_hand': {
+                'abbr': 'how2sign_MPJPE_PA_hand',
                 'mode': 'min'
-            }
+            },
+            # 'Metrics/how2sign_MPVPE_PA_all': {
+            #     'abbr': 'how2sign_MPVPE_PA_all',
+            #     'mode': 'min'
+            # },
+            # 'Metrics/csl_MPJPE_PA_hand': {
+            #     'abbr': 'csl_MPJPE_PA_hand',
+            #     'mode': 'min'
+            # },
+            # 'Metrics/csl_MPVPE_PA_all': {
+            #     'abbr': 'csl_MPVPE_PA_all',
+            #     'mode': 'min'
+            # },
+            # 'Metrics/phoenix_MPJPE_PA_hand': {
+            #     'abbr': 'phoenix_MPJPE_PA_hand',
+            #     'mode': 'min'
+            # },
+            # 'Metrics/phoenix_MPVPE_PA_all': {
+            #     'abbr': 'phoenix_MPVPE_PA_all',
+            #     'mode': 'min'
+            # },
         },
         'HUMANACTMetrics': {
             'Metrics/Accuracy': {
@@ -110,10 +165,10 @@ def getCheckpointCallback(cfg, logger=None, **kwargs):
         }
     }
 
-    checkpointParams.update({
-        'every_n_epochs': cfg.LOGGER.VAL_EVERY_STEPS,
-        'save_top_k': 1,
-    })
+    # checkpointParams.update({
+    #     'every_n_epochs': None,  #cfg.LOGGER.VAL_EVERY_STEPS,
+    #     'save_top_k': 1,
+    # })
 
     for metric in metrics:
         if metric in metric_monitor_map.keys():
@@ -129,7 +184,7 @@ def getCheckpointCallback(cfg, logger=None, **kwargs):
                     metric_monitor_map[metric][metric_monitor]['mode']
                     + "-" +
                     metric_monitor_map[metric][metric_monitor]['abbr']
-                    + "{ep}",
+                    + "{epoch}",
                     'monitor':
                     metric_monitor,
                     'mode':

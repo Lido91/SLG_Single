@@ -1,0 +1,172 @@
+# TM Transformer Training Config for How2Sign
+# UniMuMo-style architecture adapted for MotionGPT
+#
+# Key differences from mgpt:
+# - Training uses pre-computed tokens (Text2MotionDatasetCB)
+# - Validation uses on-the-fly VAE decoding (Text2MotionDatasetEval)
+# - TM Transformer replaces the GPT-based LM
+
+NAME: TM-H2S  # Experiment name
+DEBUG: False
+ACCELERATOR: 'gpu'
+NUM_NODES: 1
+DEVICE: [0,1,2]
+# SEED_VALUE: 1234
+
+# =============================================================================
+# Training Settings
+# =============================================================================
+TRAIN:
+  STAGE: lm_pretrain  # Use Text2MotionDatasetCB for loading pre-computed tokens
+  NUM_WORKERS: 8
+  BATCH_SIZE: 64
+  END_EPOCH: 300
+  RESUME: ''
+  PRETRAINED: ''
+  # VQ-VAE checkpoint for validation (on-the-fly decoding)
+  # This should match the VAE used to generate the pre-computed tokens
+  PRETRAINED_VAE: experiments/mgpt/DETO_RVQ_wholebody/checkpoints/min-how2sign_MPJPE_PA_handepoch=439.ckpt
+
+  OPTIM:
+    target: AdamW
+    params:
+      lr: 1e-4
+      betas: [0.9, 0.95]
+      weight_decay: 0.01
+
+  LR_SCHEDULER:
+    target: CosineAnnealingLR
+    params:
+      T_max: ${TRAIN.END_EPOCH}
+      eta_min: 1e-6
+
+# =============================================================================
+# Evaluation Settings
+# =============================================================================
+EVAL:
+  BATCH_SIZE: 16
+  NUM_WORKERS: 8
+  SPLIT: val
+
+TEST:
+  SPLIT: test
+  BATCH_SIZE: 32
+  REPLICATION_TIMES: 1
+  SAVE_PREDICTIONS: true
+
+# =============================================================================
+# Dataset Settings (How2Sign)
+# =============================================================================
+DATASET:
+  target: mGPT.data.H2S.H2SDataModule
+  NFEATS: 133  # Full body features for How2Sign (referenced by vq.h2s_rvq)
+  H2S:
+    DATASET_NAME: how2sign
+    ROOT: /data/hwu/slg_data/How2Sign
+    CSL_ROOT: /data/hwu/slg_data/CSL-Daily
+    PHOENIX_ROOT: /data/hwu/slg_data/Phoenix_2014T
+    MEAN_PATH: /data/hwu/slg_data/CSL-Daily/mean.pt
+    STD_PATH: /data/hwu/slg_data/CSL-Daily/std.pt
+    MAX_MOTION_LEN: 400
+    MIN_MOTION_LEN: 40
+    MAX_TEXT_LEN: 40
+    PICK_ONE_TEXT: true
+    FRAME_RATE: 20.0
+    UNIT_LEN: 4
+    STD_TEXT: False
+
+  # Path to pre-computed motion tokens (output of get_motion_code.py)
+  # Tokens are stored as: {data_root}/{CODE_PATH}/{src}/{name}.npy
+  # Shape: [1, T, K] where K=6 codebooks
+  CODE_PATH: TOKENS_h2s_rvq_whole_6
+
+  # Task instructions file
+  TASK_PATH: prepare/instructions/template_pretrain.json
+
+  WORD_VERTILIZER_PATH: prepare/deps/glove
+
+# =============================================================================
+# TM Transformer Model Settings
+# =============================================================================
+TM_MODEL:
+  # Codebook settings (must match VQ-VAE that generated tokens)
+  N_Q: 6              # Number of codebooks
+  CARD: 512           # Codebook vocabulary size
+
+  # Transformer architecture
+  DIM: 768            # Hidden dimension
+  NUM_HEADS: 12       # Attention heads
+  NUM_LAYERS: 12      # Transformer layers
+  HIDDEN_SCALE: 4     # FFN hidden dim = DIM * HIDDEN_SCALE
+  DROPOUT: 0.1        # Dropout rate
+  LAYER_SCALE: null   # Layer scale (null = disabled)
+
+  # T5 Conditioner
+  T5_NAME: "google/flan-t5-base"  # Or local path: "flan-t5-base/"
+  T5_FINETUNE: false  # Whether to finetune T5 encoder
+
+  # Classifier-Free Guidance
+  CFG_DROPOUT: 0.1    # CFG dropout during training (10%)
+  CFG_COEF: 3.0       # CFG coefficient at inference
+
+  # Codebook pattern for RVQ
+  PATTERN_TYPE: "delayed"  # 'delayed', 'parallel', or 'flatten'
+  DELAYS: null        # Custom delays (null = [0,1,2,3,4,5])
+
+  # Training hyperparameters
+  LR: 1e-4            # Learning rate
+  WEIGHT_DECAY: 0.01  # Weight decay
+  WARMUP_STEPS: 2000  # Linear warmup steps
+  MAX_STEPS: 200000   # Max training steps (for LR scheduler)
+  EMB_LR: null        # Separate LR for embeddings (null = use main LR)
+
+  # Generation parameters (for inference/validation)
+  GEN_TEMP: 1.0       # Sampling temperature
+  GEN_TOP_K: 250      # Top-k sampling
+  GEN_TOP_P: 0.0      # Nucleus sampling (0 = disabled)
+  GEN_MAX_LEN: 256    # Maximum generation length
+
+# =============================================================================
+# Logging
+# =============================================================================
+LOGGER:
+  TYPE: ['wandb']
+  VAL_EVERY_STEPS: 10 # Validate every N steps
+  WANDB:
+    params:
+      project: tm-transformer
+
+# =============================================================================
+# Metrics (for evaluation)
+# =============================================================================
+METRIC:
+  TYPE: ['MRMetrics']
+
+# =============================================================================
+# Loss Settings (for reference, handled in model)
+# =============================================================================
+LOSS:
+  LAMBDA_FEATURE: 1.0
+  LAMBDA_VELOCITY: 0.0
+  LAMBDA_COMMIT: 0.02
+  LAMBDA_CLS: 1.0
+  ABLATION:
+    RECONS_LOSS: 'l1_smooth'
+
+# =============================================================================
+# VQ-VAE Config for Validation (on-the-fly decoding)
+# Uses ${vq.h2s_rvq} from configs/vq/h2s_rvq.yaml (like soke_h2s_stage2.yaml)
+# This must match the VAE that generated the pre-computed tokens
+# =============================================================================
+ABLATION:
+  VAE_TYPE: 'actor'
+  VAE_ARCH: 'encoder_decoder'
+  PE_TYPE: 'actor'
+  DIFF_PE_TYPE: 'actor'
+  SKIP_CONNECT: False
+  MLP_DIST: False
+  IS_DIST: False
+  PREDICT_EPSILON: True
+
+# Note: DATASET.NFEATS is set by H2SDataModule to 133
+# The vq.h2s_rvq config uses ${DATASET.NFEATS} which will resolve to 133

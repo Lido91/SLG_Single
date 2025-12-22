@@ -1,0 +1,38 @@
+target: mGPT.archs.mgpt_rvq_hierarchical.HierarchicalRVQGPT_T2M
+params:
+  # Codebook Parameters
+  num_vq: 512                     # Codebook size per quantizer (must match RVQ-VAE)
+
+  # Architecture Parameters (matching original T2M-GPT)
+  embed_dim: 1024                 # Token embedding dimension (T2M-GPT: 1024)
+  block_size: 100                 # Maximum sequence length (400 frames / 4 = 100)
+  num_layers: 9                   # Q0 Base layers (T2M-GPT: 9)
+  num_layers_head: 9              # Q0 Head layers (T2M-GPT: 9) → Total Q0 = 18 blocks
+  num_layers_q1q2: 3              # Number of layers for Q1/Q2 decoders
+  n_head: 16                      # Number of attention heads (T2M-GPT: 16)
+  dropout: 0.1                    # Dropout probability
+
+  # Text Encoder Parameters
+  text_dim: 512                   # Text feature dimension (512 for CLIP)
+  clip_model: 'ViT-B/32'          # CLIP model for text encoding
+
+  # Training Parameters
+  pkeep: 1.0                      # Probability of keeping GT tokens for conditioning
+                                  # 1.0 = full teacher forcing
+                                  # 0.5 = scheduled sampling (50% GT, 50% predicted)
+                                  # 0.0 = no teacher forcing
+  scheduled_sampling: 't2m'       # Scheduled sampling strategy:
+                                  # 't2m' = T2M-GPT style (per-token + random replacement)
+                                  # 'sample' = Per-sample + model predictions
+                                  # 'none' = Always teacher forcing (ignores pkeep)
+
+  # NOTE: This architecture uses T2M-GPT style for Q0 decoder
+  # - Q0: T2M-GPT style (text PREPENDED to sequence, causal self-attention only)
+  #       - Sinusoidal positional encoding (fixed)
+  #       - No separate cross-attention layer
+  # - Q1: Cross-attention style (conditioned on Q0 + text)
+  # - Q2: Cross-attention style (conditioned on Q0 + Q1 + text)
+  #
+  # Key difference from HierarchicalRVQGPT:
+  # - Q0 uses text prepending instead of cross-attention
+  # - Follows T2M-GPT's proven approach for coarse motion generation

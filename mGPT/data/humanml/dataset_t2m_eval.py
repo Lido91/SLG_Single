@@ -1,5 +1,7 @@
 import random
 import numpy as np
+import torch, os, pickle, math
+from .load_data import load_csl_sample, load_h2s_sample, load_phoenix_sample
 from .dataset_t2m import Text2MotionDataset
 
 
@@ -12,6 +14,7 @@ class Text2MotionDatasetEval(Text2MotionDataset):
         mean,
         std,
         w_vectorizer,
+        dataset_name='how2sign',
         max_motion_length=196,
         min_motion_length=40,
         unit_length=4,
@@ -23,35 +26,43 @@ class Text2MotionDatasetEval(Text2MotionDataset):
     ):
         super().__init__(data_root, split, mean, std, max_motion_length,
                          min_motion_length, unit_length, fps, tmpFile, tiny,
-                         debug, **kwargs)
+                         debug, dataset_name=dataset_name, **kwargs)
 
         self.w_vectorizer = w_vectorizer
 
 
-    def __getitem__(self, item):
-        # Get text data
-        idx = self.pointer + item
-        data = self.data_dict[self.name_list[idx]]
-        motion, m_length, text_list = data["motion"], data["length"], data["text"]
+    def __getitem__(self, idx):
+        sample = self.all_data[idx]
+        src = sample['src']
 
-        all_captions = [
-            ' '.join([token.split('/')[0] for token in text_dic['tokens']])
-            for text_dic in text_list
-        ]
+        if src == 'how2sign':
+            clip_poses, text, name, _ = load_h2s_sample(sample, self.data_dir)
+        elif src == 'csl':
+            clip_poses, text, name, _ = load_csl_sample(sample, self.csl_root)
+        elif src == 'phoenix':
+            clip_poses, text, name, _ = load_phoenix_sample(sample, self.phoenix_root)
+        
+        all_captions = [text]
+        all_captions = all_captions * 3  #?
 
-        if len(all_captions) > 3:
-            all_captions = all_captions[:3]
-        elif len(all_captions) == 2:
-            all_captions = all_captions + all_captions[0:1]
-        elif len(all_captions) == 1:
-            all_captions = all_captions * 3
-
-        # Randomly select a caption
-        text_data = random.choice(text_list)
-        caption, tokens = text_data["caption"], text_data["tokens"]
+        clip_poses = (clip_poses - self.mean.numpy())/(self.std.numpy()+1e-10)
+        # return torch.from_numpy(clip_poses).float(), basename, clip_text
+        m_length = clip_poses.shape[0]
+        if m_length < self.min_motion_length:
+            idx = np.linspace(0, m_length-1, num=self.min_motion_length, dtype=int)
+            clip_poses = clip_poses[idx]
+        elif m_length > self.max_motion_length:
+            idx = np.linspace(0, m_length-1, num=self.max_motion_length, dtype=int)
+            clip_poses = clip_poses[idx]
+        else:
+            m_length = (m_length // self.unit_length) * self.unit_length
+            idx = (clip_poses.shape[0] - m_length) // 2
+            clip_poses = clip_poses[idx:idx + m_length]
+        m_length = clip_poses.shape[0]
 
         # Text
-        max_text_len = 20
+        tokens = text.split(' ')
+        max_text_len = 40
         if len(tokens) < max_text_len:
             # pad with "unk"
             tokens = ["sos/OTHER"] + tokens + ["eos/OTHER"]
@@ -62,31 +73,10 @@ class Text2MotionDatasetEval(Text2MotionDataset):
             tokens = tokens[:max_text_len]
             tokens = ["sos/OTHER"] + tokens + ["eos/OTHER"]
             sent_len = len(tokens)
-        pos_one_hots = []
-        word_embeddings = []
-        for token in tokens:
-            word_emb, pos_oh = self.w_vectorizer[token]
-            pos_one_hots.append(pos_oh[None, :])
-            word_embeddings.append(word_emb[None, :])
-        pos_one_hots = np.concatenate(pos_one_hots, axis=0)
-        word_embeddings = np.concatenate(word_embeddings, axis=0)
-        
-        # Random crop
-        if self.unit_length < 10:
-            coin2 = np.random.choice(["single", "single", "double"])
-        else:
-            coin2 = "single"
 
-        if coin2 == "double":
-            m_length = (m_length // self.unit_length - 1) * self.unit_length
-        elif coin2 == "single":
-            m_length = (m_length // self.unit_length) * self.unit_length
+        return text, torch.from_numpy(clip_poses).float(), m_length, name, None, None, "_".join(tokens), all_captions, None, src
 
-        idx = random.randint(0, len(motion) - m_length)
-        motion = motion[idx:idx + m_length]
-        
-        # Z Normalization
-        motion = (motion - self.mean) / self.std
 
-        return caption, motion, m_length, word_embeddings, pos_one_hots, sent_len, "_".join(
-            tokens), all_captions
+def sample(input,count):
+    ss=float(len(input))/count
+    return [ input[int(math.floor(i*ss))] for i in range(count) ]

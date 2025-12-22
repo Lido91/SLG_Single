@@ -5,3 +5,4 @@ from .dataset_t2m_token import Text2MotionDatasetToken
 from .dataset_t2m_m2t import Text2MotionDatasetM2T
 from .dataset_m import MotionDataset
 from .dataset_m_vq import MotionDatasetVQ
+from .dataset_m_vq_sign import H2SMotionDatasetVQ

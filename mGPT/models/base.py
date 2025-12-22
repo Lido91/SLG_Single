@@ -8,6 +8,9 @@ from os.path import join as pjoin
 from collections import OrderedDict
 from mGPT.metrics import BaseMetrics
 from mGPT.config import get_obj_from_str
+import json, pickle
+from copy import deepcopy
+import torch.distributed as dist
 
 
 class BaseModel(LightningModule):
@@ -18,8 +21,17 @@ class BaseModel(LightningModule):
 
         # Ablation
         self.test_step_outputs = []
+        self.all_name2scores = {}
         self.times = []
         self.rep_i = 0
+        cfg = self.hparams.cfg
+        self.output_dir = Path(
+            os.path.join(
+                cfg.FOLDER,
+                str(cfg.model.target.split('.')[-2].lower()),
+                str(cfg.NAME)
+            ))
+        os.makedirs(self.output_dir, exist_ok=True)
 
     def training_step(self, batch, batch_idx):
         return self.allsplit_step("train", batch, batch_idx)
@@ -29,7 +41,28 @@ class BaseModel(LightningModule):
 
     def test_step(self, batch, batch_idx):
         outputs = self.allsplit_step("test", batch, batch_idx)
-        self.test_step_outputs.append(outputs)
+
+        name = outputs['name']
+        feats_rst = outputs['feats_rst'].detach().cpu().numpy()
+        feats_ref = outputs['feats_ref'].detach().cpu().numpy()
+        text = outputs['text']
+        ref_len = outputs['lengths']
+        rst_len = outputs['lengths_rst']
+        try:
+            save_dir = os.path.join(self.output_dir, f'{self.hparams.cfg.TEST.SPLIT}_rank_'+str(torch.distributed.get_rank()))
+        except:
+            save_dir = os.path.join(self.output_dir, f'{self.hparams.cfg.TEST.SPLIT}_rank_0')
+        os.makedirs(save_dir, exist_ok=True)
+        if self.hparams.cfg.TEST.SAVE_PREDICTIONS:
+            for i in range(len(name)):
+                cur_n = name[i].split('/')[-1]
+                f_rst = feats_rst[i, :rst_len[i]]
+                f_ref = feats_ref[i, :ref_len[i]]
+                t = text[i]
+                pkl_dict = {'feats_rst': f_rst, 'feats_ref': f_ref, 'text': t}
+                with open(os.path.join(save_dir, f'{cur_n}.pkl'), 'wb') as f:
+                    pickle.dump(pkl_dict, f)
+        # self.test_step_outputs.append(outputs)
         return outputs
 
     def predict_step(self, batch, batch_idx):
@@ -43,6 +76,7 @@ class BaseModel(LightningModule):
         # Write to log only if not sanity check
         if not self.trainer.sanity_checking:
             self.log_dict(dico, sync_dist=True, rank_zero_only=True)
+        # dist.barrier()
 
     def on_validation_epoch_end(self):
         # Log steps and losses
@@ -52,20 +86,56 @@ class BaseModel(LightningModule):
         dico.update(self.loss_log_dict('val'))
         # Log metrics
         dico.update(self.metrics_log_dict())
+        # print('dico', dico)
         # Write to log only if not sanity check
         if not self.trainer.sanity_checking:
             self.log_dict(dico, sync_dist=True, rank_zero_only=True)
+            # print('dico', dico)
+        # dist.barrier()
+        # print(f'{dist.get_rank()}: val epoch end')
 
     def on_test_epoch_end(self):
+        #print before sync
+        if 'lm' in self.hparams.stage:
+            name2scores = getattr(self.metrics.TM2TMetrics, 'name2scores')
+            metrics = ["how2sign_DTW_MPJPE_PA_lhand", "how2sign_DTW_MPJPE_PA_rhand", "how2sign_DTW_MPJPE_PA_body", 
+                           "csl_DTW_MPJPE_PA_lhand", "csl_DTW_MPJPE_PA_rhand", "csl_DTW_MPJPE_PA_body",
+                           "phoenix_DTW_MPJPE_PA_lhand", "phoenix_DTW_MPJPE_PA_rhand", "phoenix_DTW_MPJPE_PA_body"]
+            scores, count = {}, {}
+            for m in metrics:
+                scores[m] = count[m] = 0
+            for name, value_dict in name2scores.items():
+                for n, val in value_dict.items():
+                    scores[n] = scores[n] + val
+                    count[n] = count[n] + 1
+            for k in scores.keys():
+                scores[k] = scores[k] / max(count[k], 1)
+            # Check if distributed training is initialized before getting rank
+            rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+            print('rank: ', rank, scores)
+
         # Log metrics
         dico = self.metrics_log_dict()
         # Write to log only if not sanity check
         if not self.trainer.sanity_checking:
             self.log_dict(dico, sync_dist=True, rank_zero_only=True)
-        self.save_npy(self.test_step_outputs)
+        # self.save_npy(self.test_step_outputs)
+
+        # save prediction
+        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+        save_dir = os.path.join(self.output_dir, f'{self.hparams.cfg.TEST.SPLIT}_rank_'+str(rank))
+        os.makedirs(save_dir, exist_ok=True)
+        if 'lm' in self.hparams.stage:
+            with open(os.path.join(save_dir, 'test_scores.json'), 'w') as f:
+                json.dump(getattr(self.metrics.TM2TMetrics, 'name2scores'), f)
+        elif 'vae' in self.hparams.stage:
+            with open(os.path.join(save_dir, 'test_scores.json'), 'w') as f:
+                json.dump(getattr(self.metrics.MRMetrics, 'name2scores'), f)
+        
         self.rep_i = self.rep_i + 1
         # Free up the memory
         self.test_step_outputs.clear()
+        self.all_name2scores = {}
 
     def preprocess_state_dict(self, state_dict):
         new_state_dict = OrderedDict()

@@ -1,0 +1,26 @@
+target: mGPT.archs.mgpt_rvq_hierarchical.HierarchicalRVQGPT_6_layer
+params:
+  # Codebook Parameters
+  num_vq: 512                     # Codebook size per quantizer (must match RVQ-VAE)
+
+  # Architecture Parameters
+  embed_dim: 1024                 # Token embedding dimension
+  block_size: 100                 # Maximum sequence length (400 frames / 4 = 100)
+  num_layers: 9                   # Number of transformer layers per decoder
+  n_head: 16                      # Number of attention heads
+  dropout: 0.1                    # Dropout probability
+
+  # Text Encoder Parameters
+  text_dim: 512                   # Text feature dimension (512 for CLIP, 1024 for T5)
+
+  # Scheduled Sampling
+  pkeep: 0.5                      # 1.0=full teacher forcing, 0.5=scheduled sampling
+
+  # NOTE: This architecture uses ALL 6 quantizers (Q0-Q5) from the RVQ-VAE
+  # - Q0: Coarse motion codes (independent, text-only conditioning)
+  # - Q1: Refinement (conditioned on Q0 + text)
+  # - Q2: Refinement (conditioned on Q0 + Q1 + text)
+  # - Q3: Refinement (conditioned on Q0 + Q1 + Q2 + text)
+  # - Q4: Refinement (conditioned on Q0-Q3 + text)
+  # - Q5: Finest refinement (conditioned on Q0-Q4 + text)
+  # Loss weights: Q0=1.0, Q1=0.5, Q2=0.25, Q3=0.125, Q4=0.0625, Q5=0.03125

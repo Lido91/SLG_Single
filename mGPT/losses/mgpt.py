@@ -33,9 +33,23 @@ class GPTLosses(BaseLosses):
 
             losses.append("vq_commit")
             params['vq_commit'] = cfg.LOSS.LAMBDA_COMMIT
-        elif stage in ["lm_pretrain", "lm_instruct"]:
+        elif stage in ["lm_pretrain", "lm_instruct", "lm_rvq_hierarchical"]:
             losses.append("gpt_loss")
             params['gpt_loss'] = cfg.LOSS.LAMBDA_CLS
+            # Add per-decoder losses and accuracies for hierarchical RVQ-GPT logging
+            # These are registered for all LM stages but only used if model outputs them
+            # 3-layer losses and accuracies
+            for i in range(3):
+                losses.append(f"gpt_loss_q{i}")
+                params[f'gpt_loss_q{i}'] = 0.0  # Weight 0 (already included in gpt_loss)
+                losses.append(f"gpt_acc_q{i}")
+                params[f'gpt_acc_q{i}'] = 0.0
+            # 6-layer losses and accuracies (will be used if model has them)
+            for i in range(3, 6):
+                losses.append(f"gpt_loss_q{i}")
+                params[f'gpt_loss_q{i}'] = 0.0
+                losses.append(f"gpt_acc_q{i}")
+                params[f'gpt_acc_q{i}'] = 0.0
 
         # Define loss functions & weights
         losses_func = {}
@@ -48,7 +62,7 @@ class GPTLosses(BaseLosses):
                 elif recons_loss == "l1_smooth":
                     losses_func[loss] = nn.SmoothL1Loss
             elif loss.split('_')[1] in [
-                    'commit', 'loss', 'gpt', 'm2t2m', 't2m2t'
+                    'commit', 'loss', 'gpt', 'm2t2m', 't2m2t', 'acc'
             ]:
                 losses_func[loss] = CommitLoss
             elif loss.split('_')[1] in ['cls', 'lm']:
@@ -86,9 +100,23 @@ class GPTLosses(BaseLosses):
             total += self._update_loss("vq_commit", rs_set['loss_commit'],
                                        rs_set['loss_commit'])
 
-        if self.stage in ["lm_pretrain", "lm_instruct"]:
+        if self.stage in ["lm_pretrain", "lm_instruct", "lm_rvq_hierarchical"]:
             total += self._update_loss("gpt_loss", rs_set['outputs'].loss,
                                        rs_set['outputs'].loss)
+            # Log per-decoder losses and accuracies for hierarchical RVQ-GPT
+            # Dynamically log losses and accuracies for available quantizers (3 or 6)
+            # Works for all LM stages - only logs if model outputs these attributes
+            for i in range(6):
+                loss_attr = f'loss_q{i}'
+                acc_attr = f'acc_q{i}'
+                if hasattr(rs_set['outputs'], loss_attr):
+                    self._update_loss(f"gpt_loss_q{i}",
+                                      getattr(rs_set['outputs'], loss_attr),
+                                      getattr(rs_set['outputs'], loss_attr))
+                if hasattr(rs_set['outputs'], acc_attr):
+                    self._update_loss(f"gpt_acc_q{i}",
+                                      getattr(rs_set['outputs'], acc_attr),
+                                      getattr(rs_set['outputs'], acc_attr))
 
         # Update the total loss
         self.total += total.detach()

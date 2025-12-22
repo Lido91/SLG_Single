@@ -1,0 +1,118 @@
+# Text-to-Motion Transformer Configuration
+# UniMuMo-style architecture adapted for MotionGPT
+
+# =============================================================================
+# Model Architecture
+# =============================================================================
+model:
+  target: mGPT.models.tm_lightning.TextToMotionLightning
+  params:
+    # Codebook settings (MotionGPT RVQ)
+    n_q: 6                    # Number of codebooks
+    card: 512                 # Codebook vocabulary size
+
+    # Transformer settings
+    dim: 768                  # Hidden dimension
+    num_heads: 12             # Attention heads
+    num_layers: 12            # Transformer layers
+    hidden_scale: 4           # FFN hidden dim = dim * hidden_scale
+    dropout: 0.1              # Dropout rate
+    layer_scale: null         # Layer scale (null = disabled)
+
+    # T5 Conditioner settings
+    t5_name: "google/flan-t5-base"
+    t5_finetune: false        # Whether to finetune T5
+
+    # Classifier-Free Guidance
+    cfg_dropout: 0.1          # CFG dropout during training
+    cfg_coef: 3.0             # CFG coefficient at inference
+
+    # Codebook pattern
+    pattern_type: "delayed"   # 'delayed', 'parallel', or 'flatten'
+    delays: null              # Custom delays (null = [0,1,2,3,4,5])
+
+    # Training config
+    lr: 1.0e-4                # Learning rate
+    weight_decay: 0.01        # Weight decay
+    warmup_steps: 2000        # Warmup steps
+    max_steps: 200000         # Total training steps
+    emb_lr: null              # Separate LR for embeddings (null = use main lr)
+
+    # Generation config
+    gen_temp: 1.0             # Sampling temperature
+    gen_top_k: 250            # Top-k sampling
+    gen_top_p: 0.0            # Nucleus sampling (0 = disabled)
+    gen_max_len: 256          # Maximum generation length
+
+# =============================================================================
+# VQ-VAE (Motion Tokenizer) - Use existing MotionGPT VQ-VAE
+# =============================================================================
+vq:
+  target: mGPT.archs.mgpt_vq.VQVae
+  params:
+    quantizer: "rvq"
+    code_dim: 512
+    nb_code: 512
+    num_quantizers: 6
+    # ... other VQ params from existing config
+
+# =============================================================================
+# Data
+# =============================================================================
+data:
+  target: mGPT.data.HumanML3D
+  params:
+    batch_size: 32
+    num_workers: 4
+    max_motion_length: 196    # Max motion frames
+    min_motion_length: 40     # Min motion frames
+
+# =============================================================================
+# Training
+# =============================================================================
+trainer:
+  accelerator: "gpu"
+  devices: 1
+  precision: "bf16-mixed"
+  max_steps: 200000
+  val_check_interval: 1000
+  log_every_n_steps: 50
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1.0
+
+# =============================================================================
+# Logging
+# =============================================================================
+logger:
+  target: pytorch_lightning.loggers.WandbLogger
+  params:
+    project: "motiongpt-tm-transformer"
+    name: "tm_base"
+
+# =============================================================================
+# Callbacks
+# =============================================================================
+callbacks:
+  - target: pytorch_lightning.callbacks.ModelCheckpoint
+    params:
+      dirpath: "experiments/tm_transformer/checkpoints"
+      filename: "epoch={epoch}-step={step}-val_loss={val/loss:.4f}"
+      save_top_k: 3
+      monitor: "val/loss"
+      mode: "min"
+      save_last: true
+
+  - target: pytorch_lightning.callbacks.LearningRateMonitor
+    params:
+      logging_interval: "step"
+
+# =============================================================================
+# Generation Parameters (for inference)
+# =============================================================================
+generation:
+  use_sampling: true
+  temp: 1.0
+  top_k: 250
+  top_p: 0.0
+  cfg_coef: 3.0
+  max_gen_len: 256

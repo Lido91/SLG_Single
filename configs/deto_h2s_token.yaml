@@ -1,0 +1,57 @@
+NAME: DETO-H2S-TOKEN
+ACCELERATOR: "gpu"
+NUM_NODES: 1
+DEVICE: [0]
+
+TRAIN:
+  STAGE: token
+  NUM_WORKERS: 8
+  BATCH_SIZE: 1
+  END_EPOCH: 1
+  RESUME: ""
+  PRETRAINED: ""
+  PRETRAINED_VAE: "experiments/mgpt/debug--DETO-H2S/checkpoints/last.ckpt"
+
+EVAL:
+  BATCH_SIZE: 1
+  SPLIT: val
+
+TEST:
+  CHECKPOINTS: ""
+  SPLIT: test
+  BATCH_SIZE: 1
+  REPLICATION_TIMES: 1
+  SAVE_PREDICTIONS: False
+
+DATASET:
+  target: mGPT.data.H2S.H2SDataModule
+  CODE_PATH: TOKENS_h2s_csl_phoenix/how2sign_whole
+  TASK_PATH: ""
+  WORD_VERTILIZER_PATH: prepare/deps/glove
+  H2S:
+    DATASET_NAME: how2sign
+    ROOT: ../SOKE/data/How2Sign
+    CSL_ROOT: ../SOKE/data/CSL-Daily
+    PHOENIX_ROOT: ../SOKE/data/Phoenix_2014T
+    MEAN_PATH: ../SOKE/data/CSL-Daily/mean.pt
+    STD_PATH: ../SOKE/data/CSL-Daily/std.pt
+    MAX_MOTION_LEN: 400
+    MIN_MOTION_LEN: 40
+    MAX_TEXT_LEN: 40
+    PICK_ONE_TEXT: true
+    FRAME_RATE: 20.0
+    UNIT_LEN: 4
+    STD_TEXT: False
+
+METRIC:
+  TYPE: ["MRMetrics"]
+
+model:
+  target: mGPT.models.mgpt.MotionGPT
+  params:
+    condition: "text"
+    task: "t2m"
+    lm: ${lm.default}
+    motion_vae: ${vq.default}
+    hand_vae_cfg: null
+    rhand_vae_cfg: null

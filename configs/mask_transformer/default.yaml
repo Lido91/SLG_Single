@@ -1,0 +1,15 @@
+# MaskTransformer (Stage 2) configuration
+target: mGPT.archs.mask_transformer.MaskTransformer
+params:
+  num_tokens: 512             # Codebook size (must match RVQ-VAE)
+  code_dim: 512               # Token embedding dimension
+  latent_dim: 384             # Transformer hidden dimension
+  ff_size: 1024               # Feedforward dimension
+  num_layers: 8               # Number of transformer layers
+  num_heads: 6                # Number of attention heads
+  dropout: 0.1                # Dropout rate
+  cond_drop_prob: 0.1         # Classifier-free guidance dropout
+  clip_dim: 512               # CLIP embedding dimension
+  clip_version: 'ViT-B/32'    # CLIP model version
+  num_quantizers: 3           # Number of RVQ quantizers
+  cond_mode: 'text'           # Conditioning mode ('text', 'action', 'uncond')

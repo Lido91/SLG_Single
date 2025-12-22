@@ -8,16 +8,16 @@ TRAIN:
   STAGE: lm_instruct # stage "vae" , "lm_pretrain", "lm_instruct"
   #---------------------------------
   NUM_WORKERS: 16 # Number of workers
-  BATCH_SIZE: 16 # Size of batches
-  END_EPOCH: 999999 # End epoch
+  BATCH_SIZE: 64 # Size of batches
+  END_EPOCH: 150 # End epoch
   RESUME: '' # Resume training from this path
   PRETRAINED: '' # Preatrained model path
-  PRETRAINED_VAE: checkpoints/MotionGPT-base/motiongpt_s3_h3d.tar # Vae model path
+  PRETRAINED_VAE: experiments/mgpt/DETO_RVQ_wholebody/checkpoints/last.ckpt  # Vae model path
 
   OPTIM:
     target: AdamW
     params:
-      lr: 1e-4
+      lr: 2e-4
       betas: [0.9, 0.99]
       weight_decay: 0.0
 
@@ -27,17 +27,17 @@ EVAL:
   SPLIT: test
 
 TEST:
-  CHECKPOINTS: checkpoints/MotionGPT-base/motiongpt_s3_h3d.tar
+  CHECKPOINTS: 
   # CHECKPOINTS: /apdcephfs/share_1227775/billljiang/memData/experiments/gpt0/0514_Instruct_T5BASE_HumanML3D/checkpoints/epoch=119.tar
   SPLIT: test
   BATCH_SIZE: 32 # training Batch size
 
 DATASET:
   target: mGPT.data.HumanML3D.HumanML3DDataModule
-  CODE_PATH: TOKENS
+  CODE_PATH: /data/hwu/slg_data/How2Sign/TOKENS_h2s_rvq_whole_3
 
 METRIC:
-  TYPE: ['TM2TMetrics', 'PredMetrics']
+  TYPE: ['TM2TMetrics']
 
 LOSS:
   LAMBDA_FEATURE: 1.0
@@ -56,8 +56,8 @@ model:
     motion_vae: ${vq.default}
 
 LOGGER:
-  TYPE: ['tensorboard', 'wandb']
-  VAL_EVERY_STEPS: 10
+  TYPE: ['wandb']
+  VAL_EVERY_STEPS: 5
   WANDB:
     params:
       project: mem

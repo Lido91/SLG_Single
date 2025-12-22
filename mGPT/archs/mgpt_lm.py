@@ -283,7 +283,9 @@ class MLM(nn.Module):
                              task: str = "t2m",
                              with_len: bool = False,
                              stage: str = 'train',
-                             tasks: dict = None):
+                             tasks: dict = None,
+                             src: Optional[Tensor] = None,
+                             name: Optional[List[str]] = None):
 
         self.device = self.language_model.device
 
@@ -413,10 +415,16 @@ class MLM(nn.Module):
                 motion_string[i], f'<motion_id_{self.m_codebook_size}>',
                 f'<motion_id_{self.m_codebook_size + 1}>')
             string_list = string.split('><')
-            token_list = [
-                int(i.split('_')[-1].replace('>', ''))
-                for i in string_list[1:-1]
-            ]
+            token_list = []
+            for token_str in string_list[1:-1]:
+                try:
+                    # Extract the number after the last underscore and remove '>'
+                    token_id = int(token_str.split('_')[-1].replace('>', ''))
+                    token_list.append(token_id)
+                except ValueError:
+                    # Skip malformed tokens (e.g., '143-' or other invalid formats)
+                    # This can happen during early training when the model hasn't learned proper token generation
+                    continue
             if len(token_list) == 0:
                 token_list = [0]
             token_list_padded = torch.tensor(token_list,

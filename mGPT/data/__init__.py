@@ -41,7 +41,8 @@ class BASEDataModule(pl.LightningDataModule):
             # self._test_dataset = self.DatasetEval(split=self.cfg.TEST.SPLIT,
             #                                       **self.hparams)
             params = self.hparams.copy()
-            params['code_path'] = None
+            if not ('lm' in self.cfg.TRAIN.STAGE or self.cfg.TRAIN.STAGE in ["token", "m2t"]):
+                params['code_path'] = None
             params['split'] = self.cfg.TEST.SPLIT
             self._test_dataset = self.DatasetEval( **params)
         return self._test_dataset

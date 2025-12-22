@@ -1,0 +1,38 @@
+target: mGPT.archs.mgpt_hrvq.HRVQVae
+params:
+  # Hierarchical Residual Quantization Parameters (V2)
+  scales: [2, 1]                    # Multi-scale temporal factors
+  quantizer_version: 'v2'           # V2 has learnable Phi refinement
+  mu: 0.99                          # EMA decay rate for codebook
+
+  # V2 Phi parameters
+  share_quant_resi: 4               # Partially shared Phi (4 modules)
+  quant_resi: 0                     # Residual ratio for Phi (0 = identity)
+
+  # Quantizer dropout (training regularization)
+  start_drop: -1                    # -1 = no dropout
+  quantize_dropout_prob: 0          # No dropout
+
+  # Codebook Parameters
+  code_num: 2048                    # Codebook size (single shared codebook)
+  code_dim: 512                     # Code embedding dimension
+  output_emb_width: 512             # Encoder output width
+
+  # Encoder/Decoder Architecture
+  down_t: 2                         # Temporal downsampling stages (4x compression)
+  stride_t: 2                       # Stride for downsampling
+  width: 512                        # Channel width
+  depth: 3                          # ResNet depth per stage
+  dilation_growth_rate: 3           # Dilation growth rate
+  norm: null                        # Normalization type (null, 'LN', 'GN', 'BN')
+  activation: 'relu'                # Activation function
+
+  # Self-Attention
+  use_attn: true                    # Enable self-attention in encoder/decoder
+  num_heads: 8                      # Number of attention heads
+
+  # Input Dimension
+  nfeats: ${DATASET.NFEATS}         # Motion feature dimension
+
+  # Ablation (from parent config)
+  ablation: ${ABLATION}

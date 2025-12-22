@@ -9,10 +9,10 @@ TRAIN:
   #---------------------------------
   NUM_WORKERS: 16 # Number of workers
   BATCH_SIZE: 16 # Size of batches
-  END_EPOCH: 999999 # End epoch
+  END_EPOCH: 200 # End epoch
   RESUME: '' # Resume training from this path
   PRETRAINED: '' # Preatrained model path
-  PRETRAINED_VAE: checkpoints/MotionGPT-base/motiongpt_s3_h3d.tar # Vae model path
+  PRETRAINED_VAE: experiments/mgpt/DETO_RVQ_wholebody/checkpoints/min-how2sign_MPJPE_PA_handepoch=299.ckpt # Vae model path
 
   OPTIM:
     target: AdamW
@@ -27,7 +27,7 @@ EVAL:
   SPLIT: test
 
 TEST:
-  CHECKPOINTS: checkpoints/MotionGPT-base/motiongpt_s3_h3d.tar
+  CHECKPOINTS: 
   SPLIT: test
   BATCH_SIZE: 32 # training Batch size
 

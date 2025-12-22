@@ -30,6 +30,7 @@ class VQVae(nn.Module):
         super().__init__()
 
         self.code_dim = code_dim
+        self.code_num = code_num
 
         self.encoder = Encoder(nfeats,
                                output_emb_width,

@@ -3,9 +3,13 @@ import os
 import torch
 from torch import Tensor
 from torchmetrics import Metric
-from torchmetrics.functional import pairwise_euclidean_distance
 from .utils import *
-from mGPT.config import instantiate_from_config
+from mGPT.metrics.dtw import dtw, l2_dist, l1_dist, l2_dist_align
+from mGPT.metrics.fid import smpl_fid
+from functools import partial
+from mGPT.utils.human_models import rigid_align, rigid_align_torch_batch, smpl_x
+from collections import defaultdict
+
 
 class TM2TMetrics(Metric):
     def __init__(self,
@@ -20,240 +24,150 @@ class TM2TMetrics(Metric):
 
         self.cfg = cfg
         self.dataname = dataname
-        self.name = "matching, fid, and diversity scores"
-        self.top_k = top_k
-        self.R_size = R_size
-        self.text = 'lm' in cfg.TRAIN.STAGE and cfg.model.params.task == 't2m'
-        self.diversity_times = diversity_times
+        self.name = "MPJPE, MPVPE DTW"
+        # self.top_k = top_k
+        # self.R_size = R_size
+        # self.text = 'lm' in cfg.TRAIN.STAGE and cfg.model.params.task == 't2m'
+        # self.diversity_times = diversity_times
+
+        self.joint_part2idx = smpl_x.joint_part2idx
+        self.vertex_part2idx = smpl_x.vertex_part2idx
+        self.smplx_part2idx = {'upper_body': list(range(30)), 'lhand': list(range(30, 75)), 'rhand': list(range(75, 120)), 'hand': list(range(30, 120)), 'face': list(range(120, 133))}
+        self.J_regressor_idx = smpl_x.J_regressor_idx
+        self.name2scores = defaultdict(dict)
 
         self.add_state("count", default=torch.tensor(0), dist_reduce_fx="sum")
-        self.add_state("count_seq",
+        self.add_state("how2sign_count_seq",
+                       default=torch.tensor(0),
+                       dist_reduce_fx="sum")
+        self.add_state("csl_count_seq",
+                       default=torch.tensor(0),
+                       dist_reduce_fx="sum")
+        self.add_state("phoenix_count_seq",
                        default=torch.tensor(0),
                        dist_reduce_fx="sum")
 
-        self.metrics = []
-
-        # Matching scores
-        if self.text:
-            self.add_state("Matching_score",
-                            default=torch.tensor(0.0),
-                            dist_reduce_fx="sum")
-            self.add_state("gt_Matching_score",
-                            default=torch.tensor(0.0),
-                            dist_reduce_fx="sum")
-            self.Matching_metrics = ["Matching_score", "gt_Matching_score"]
-            for k in range(1, top_k + 1):
-                self.add_state(
-                    f"R_precision_top_{str(k)}",
-                    default=torch.tensor(0.0),
-                    dist_reduce_fx="sum",
-                )
-                self.Matching_metrics.append(f"R_precision_top_{str(k)}")
-            for k in range(1, top_k + 1):
-                self.add_state(
-                    f"gt_R_precision_top_{str(k)}",
-                    default=torch.tensor(0.0),
-                    dist_reduce_fx="sum",
-                )
-                self.Matching_metrics.append(f"gt_R_precision_top_{str(k)}")
-            self.metrics.extend(self.Matching_metrics)
-
-        # Fid
-        self.add_state("FID", default=torch.tensor(0.0), dist_reduce_fx="sum")
-        self.metrics.append("FID")
-
-        # Diversity
-        self.add_state("Diversity",
-                       default=torch.tensor(0.0),
+        self.add_state("how2sign_DTW_MPJPE_PA_lhand",
+                       default=torch.tensor([0.0]),
                        dist_reduce_fx="sum")
-        self.add_state("gt_Diversity",
-                       default=torch.tensor(0.0),
+        self.add_state("how2sign_DTW_MPJPE_PA_rhand",
+                       default=torch.tensor([0.0]),
                        dist_reduce_fx="sum")
-        self.metrics.extend(["Diversity", "gt_Diversity"])
+        self.add_state("how2sign_DTW_MPJPE_PA_body",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
 
-        # Chached batches
-        self.add_state("text_embeddings", default=[], dist_reduce_fx=None)
-        self.add_state("recmotion_embeddings", default=[], dist_reduce_fx=None)
-        self.add_state("gtmotion_embeddings", default=[], dist_reduce_fx=None)
+        self.add_state("csl_DTW_MPJPE_PA_lhand",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        self.add_state("csl_DTW_MPJPE_PA_rhand",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        self.add_state("csl_DTW_MPJPE_PA_body",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        
+        self.add_state("phoenix_DTW_MPJPE_PA_lhand",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        self.add_state("phoenix_DTW_MPJPE_PA_rhand",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        self.add_state("phoenix_DTW_MPJPE_PA_body",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
 
-        # T2M Evaluator
-        self._get_t2m_evaluator(cfg)
+        self.MR_metrics = ["how2sign_DTW_MPJPE_PA_lhand", "how2sign_DTW_MPJPE_PA_rhand", "how2sign_DTW_MPJPE_PA_body", 
+                           "csl_DTW_MPJPE_PA_lhand", "csl_DTW_MPJPE_PA_rhand", "csl_DTW_MPJPE_PA_body",
+                           "phoenix_DTW_MPJPE_PA_lhand", "phoenix_DTW_MPJPE_PA_rhand", "phoenix_DTW_MPJPE_PA_body"]
 
-    def _get_t2m_evaluator(self, cfg):
-        """
-        load T2M text encoder and motion encoder for evaluating
-        """
-        # init module
-        self.t2m_textencoder = instantiate_from_config(cfg.METRIC.TM2T.t2m_textencoder)
-        self.t2m_moveencoder = instantiate_from_config(cfg.METRIC.TM2T.t2m_moveencoder)
-        self.t2m_motionencoder = instantiate_from_config(cfg.METRIC.TM2T.t2m_motionencoder)
+        # All metric
+        self.metrics = self.MR_metrics
 
-
-        # load pretrianed
-        if self.dataname == "kit":
-            dataname = "kit"
-        else:
-            dataname = "t2m"
-
-        t2m_checkpoint = torch.load(os.path.join(
-            cfg.METRIC.TM2T.t2m_path, dataname, "text_mot_match/model/finest.tar"),
-                                    map_location="cpu")
-
-        self.t2m_textencoder.load_state_dict(t2m_checkpoint["text_encoder"])
-        self.t2m_moveencoder.load_state_dict(
-            t2m_checkpoint["movement_encoder"])
-        self.t2m_motionencoder.load_state_dict(
-            t2m_checkpoint["motion_encoder"])
-
-        # freeze params
-        self.t2m_textencoder.eval()
-        self.t2m_moveencoder.eval()
-        self.t2m_motionencoder.eval()
-        for p in self.t2m_textencoder.parameters():
-            p.requires_grad = False
-        for p in self.t2m_moveencoder.parameters():
-            p.requires_grad = False
-        for p in self.t2m_motionencoder.parameters():
-            p.requires_grad = False
-
+        
     @torch.no_grad()
     def compute(self, sanity_flag):
-        count = self.count.item()
-        count_seq = self.count_seq.item()
 
-        # Init metrics dict
-        metrics = {metric: getattr(self, metric) for metric in self.metrics}
+        mr_metrics = {}
+        for name in self.metrics:
+            d = name.split('_')[0]
+            mr_metrics[name] = getattr(self, name) / max(getattr(self, f'{d}_count_seq'), 1e-6)
 
-        # Jump in sanity check stage
-        if sanity_flag:
-            return metrics
-
-        # Cat cached batches and shuffle
-        shuffle_idx = torch.randperm(count_seq)
-
-        all_genmotions = torch.cat(self.recmotion_embeddings,
-                                   axis=0).cpu()[shuffle_idx, :]
-        all_gtmotions = torch.cat(self.gtmotion_embeddings,
-                                  axis=0).cpu()[shuffle_idx, :]
-
-        # Compute text related metrics
-        if self.text:
-            all_texts = torch.cat(self.text_embeddings,
-                                  axis=0).cpu()[shuffle_idx, :]
-            # Compute r-precision
-            assert count_seq > self.R_size
-            top_k_mat = torch.zeros((self.top_k, ))
-            for i in range(count_seq // self.R_size):
-                # [bs=32, 1*256]
-                group_texts = all_texts[i * self.R_size:(i + 1) * self.R_size]
-                # [bs=32, 1*256]
-                group_motions = all_genmotions[i * self.R_size:(i + 1) *
-                                               self.R_size]
-                # dist_mat = pairwise_euclidean_distance(group_texts, group_motions)
-                # [bs=32, 32]
-                dist_mat = euclidean_distance_matrix(
-                    group_texts, group_motions).nan_to_num()
-                # print(dist_mat[:5])
-                self.Matching_score += dist_mat.trace()
-                argsmax = torch.argsort(dist_mat, dim=1)
-                top_k_mat += calculate_top_k(argsmax,
-                                             top_k=self.top_k).sum(axis=0)
-
-            R_count = count_seq // self.R_size * self.R_size
-            metrics["Matching_score"] = self.Matching_score / R_count
-            for k in range(self.top_k):
-                metrics[f"R_precision_top_{str(k+1)}"] = top_k_mat[k] / R_count
-
-            # Compute r-precision with gt
-            assert count_seq > self.R_size
-            top_k_mat = torch.zeros((self.top_k, ))
-            for i in range(count_seq // self.R_size):
-                # [bs=32, 1*256]
-                group_texts = all_texts[i * self.R_size:(i + 1) * self.R_size]
-                # [bs=32, 1*256]
-                group_motions = all_gtmotions[i * self.R_size:(i + 1) *
-                                              self.R_size]
-                # [bs=32, 32]
-                dist_mat = euclidean_distance_matrix(
-                    group_texts, group_motions).nan_to_num()
-                # match score
-                self.gt_Matching_score += dist_mat.trace()
-                argsmax = torch.argsort(dist_mat, dim=1)
-                top_k_mat += calculate_top_k(argsmax,
-                                             top_k=self.top_k).sum(axis=0)
-            metrics["gt_Matching_score"] = self.gt_Matching_score / R_count
-            for k in range(self.top_k):
-                metrics[f"gt_R_precision_top_{str(k+1)}"] = top_k_mat[k] / R_count
-
-        # tensor -> numpy for FID
-        all_genmotions = all_genmotions.numpy()
-        all_gtmotions = all_gtmotions.numpy()
-
-        # Compute fid
-        mu, cov = calculate_activation_statistics_np(all_genmotions)
-        gt_mu, gt_cov = calculate_activation_statistics_np(all_gtmotions)
-        metrics["FID"] = calculate_frechet_distance_np(gt_mu, gt_cov, mu, cov)
-
-        # Compute diversity
-        assert count_seq > self.diversity_times
-        metrics["Diversity"] = calculate_diversity_np(all_genmotions,
-                                                      self.diversity_times)
-        metrics["gt_Diversity"] = calculate_diversity_np(
-            all_gtmotions, self.diversity_times)
-
+        for name, v in mr_metrics.items():
+            print(name, ': ', v)
+        
         # Reset
         self.reset()
+        
+        return mr_metrics
 
-        return {**metrics}
 
     @torch.no_grad()
-    def update(self,
-               feats_ref: Tensor,
-               feats_rst: Tensor,
-               lengths_ref: List[int],
-               lengths_rst: List[int],
-               word_embs: Tensor = None,
-               pos_ohot: Tensor = None,
-               text_lengths: Tensor = None):
+    def update(self, 
+               feats_rst: Tensor, feats_ref: Tensor,
+               joints_rst: Tensor, joints_ref: Tensor,
+               vertices_rst: Tensor, vertices_ref: Tensor,
+               lengths: List[int], lengths_rst: List[int],
+               split: str, src: List[str], name: List[str]):
+        # assert joints_rst.shape == joints_ref.shape
+        # assert joints_rst.dim() == 4
+        # (bs, seq, njoint=22, 3)
 
-        self.count += sum(lengths_ref)
-        self.count_seq += len(lengths_ref)
+        B = len(lengths)
+        BT, N = joints_rst.shape[:2]
+        joints_rst = joints_rst.reshape(B, BT//B, N, 3)
+        BT, N = joints_ref.shape[:2]
+        joints_ref = joints_ref.reshape(B, BT//B, N, 3)
 
-        # T2m motion encoder
-        align_idx = np.argsort(lengths_ref)[::-1].copy()
-        feats_ref = feats_ref[align_idx]
-        lengths_ref = np.array(lengths_ref)[align_idx]
-        gtmotion_embeddings = self.get_motion_embeddings(
-            feats_ref, lengths_ref)
-        cache = [0] * len(lengths_ref)
-        for i in range(len(lengths_ref)):
-            cache[align_idx[i]] = gtmotion_embeddings[i:i + 1]
-        self.gtmotion_embeddings.extend(cache)
+        BT, N = vertices_rst.shape[:2]
+        vertices_rst = vertices_rst.reshape(B, BT//B, N, 3)
+        BT, N = vertices_ref.shape[:2]
+        vertices_ref = vertices_ref.reshape(B, BT//B, N, 3)
 
-        align_idx = np.argsort(lengths_rst)[::-1].copy()
-        feats_rst = feats_rst[align_idx]
-        lengths_rst = np.array(lengths_rst)[align_idx]
-        recmotion_embeddings = self.get_motion_embeddings(
-            feats_rst, lengths_rst)
-        cache = [0] * len(lengths_rst)
-        for i in range(len(lengths_rst)):
-            cache[align_idx[i]] = recmotion_embeddings[i:i + 1]
-        self.recmotion_embeddings.extend(cache)
+        # avoid cuda error of DDP in pampjpe
+        joints_rst = joints_rst.detach().cpu().numpy()
+        joints_ref = joints_ref.detach().cpu().numpy()
+        vertices_rst = vertices_rst.detach().cpu()
+        vertices_ref = vertices_ref.detach().cpu()
 
-        # T2m text encoder
-        if self.text:
-            text_emb = self.t2m_textencoder(word_embs, pos_ohot, text_lengths)
-            text_embeddings = torch.flatten(text_emb, start_dim=1).detach()
-            self.text_embeddings.append(text_embeddings)
+        part_lst = ['body', 'lhand', 'rhand']  #save time for validation during training
+        for i in range(len(lengths)):
+            cur_len = lengths[i]
+            rst_len = lengths_rst[i]
+            mesh_gt = vertices_ref[i, :cur_len]
+            mesh_out = vertices_rst[i, :rst_len]
+            joints_rst_cur = joints_rst[i, :rst_len] 
+            joints_ref_cur = joints_ref[i, :cur_len]
+            data_src = src[i]
+            cur_name = name[i]
+            setattr(self, f"{data_src}_count_seq", getattr(self, f"{data_src}_count_seq")+1)
+            # print(cur_len, rst_len)
 
-    def get_motion_embeddings(self, feats: Tensor, lengths: List[int]):
-        m_lens = torch.tensor(lengths)
-        m_lens = torch.div(m_lens,
-                           self.cfg.DATASET.HUMANML3D.UNIT_LEN,
-                           rounding_mode="floor")
-        m_lens = m_lens // self.cfg.DATASET.HUMANML3D.UNIT_LEN
-        mov = self.t2m_moveencoder(feats[..., :-4]).detach()
-        emb = self.t2m_motionencoder(mov, m_lens)
+            if split in ['val', 'test']:
+                '''
+                Note that when align_idx=0, the metric is DTW-JPE; when align_idx=None, the metric is DTW-PA-JPE. But we didn't modify the variable names.
+                '''
+                joint_idx = self.joint_part2idx['upper_body']
+                dist_func = partial(l2_dist_align, wanted=joint_idx, align_idx=0)
+                value = dtw(joints_rst_cur, joints_ref_cur, dist_func)[0]
+                setattr(self, f'{data_src}_DTW_MPJPE_PA_body', getattr(self, f'{data_src}_DTW_MPJPE_PA_body') + value)
+                self.name2scores[cur_name][f'{data_src}_DTW_MPJPE_PA_body'] = value
+                # print('body: ', value)
 
-        # [bs, nlatent*ndim] <= [bs, nlatent, ndim]
-        return torch.flatten(emb, start_dim=1).detach()
+                joint_idx = self.joint_part2idx['lhand']
+                joint_gt_lhand = torch.matmul(smpl_x.orig_hand_regressor['left'], mesh_gt).float().numpy()
+                joint_out_lhand = torch.matmul(smpl_x.orig_hand_regressor['left'], mesh_out).float().numpy()
+                dist_func = partial(l2_dist_align, align_idx=0)
+                value = dtw(joint_out_lhand, joint_gt_lhand, dist_func)[0]
+                setattr(self, f"{data_src}_DTW_MPJPE_PA_lhand", getattr(self, f"{data_src}_DTW_MPJPE_PA_lhand") + value)
+                self.name2scores[cur_name][f"{data_src}_DTW_MPJPE_PA_lhand"] = value
+                # print('lhand: ', value)
+
+                joint_idx = self.joint_part2idx['rhand']
+                joint_gt_rhand = torch.matmul(smpl_x.orig_hand_regressor['right'], mesh_gt).float().numpy()
+                joint_out_rhand = torch.matmul(smpl_x.orig_hand_regressor['right'], mesh_out).float().numpy()
+                dist_func = partial(l2_dist_align, align_idx=0)
+                value = dtw(joint_out_rhand, joint_gt_rhand, dist_func)[0]
+                setattr(self, f"{data_src}_DTW_MPJPE_PA_rhand", getattr(self, f"{data_src}_DTW_MPJPE_PA_rhand") + value)
+                self.name2scores[cur_name][f"{data_src}_DTW_MPJPE_PA_rhand"] = value
+        

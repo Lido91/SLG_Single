@@ -1,0 +1,85 @@
+NAME: MotionGPT # Stage 2 (text-to-motion) config tuned for How2Sign only
+DEBUG: False  # Disable debug mode for production training
+ACCELERATOR: 'gpu'
+NUM_NODES: 1
+DEVICE: [0,1,2]
+
+TRAIN:
+  STAGE: lm_pretrain
+  NUM_WORKERS: 8
+  BATCH_SIZE: 64
+  END_EPOCH: 150
+  RESUME: ''
+  PRETRAINED: ''
+  PRETRAINED_VAE: experiments/mgpt/debug--DETO-H2S/checkpoints/last.ckpt
+
+  OPTIM:
+    target: AdamW
+    params:
+      lr: 2e-4
+      betas: [0.9, 0.99]
+      weight_decay: 0.0
+
+  LR_SCHEDULER:
+    target: CosineAnnealingLR
+    params:
+      T_max: ${TRAIN.END_EPOCH}
+      eta_min: 1e-6
+
+EVAL:
+  BATCH_SIZE: 16
+  SPLIT: val
+
+TEST:
+  CHECKPOINTS: 'experiments/mgpt/MotionGPT_2025-10-24-07-30-38/checkpoints/min-how2sign_DTW_MPJPE_PA_lhandepoch=49.ckpt'
+  SPLIT: test
+  BATCH_SIZE: 32
+  REPLICATION_TIMES: 1
+  SAVE_PREDICTIONS: true
+
+DATASET:
+  target: mGPT.data.H2S.H2SDataModule
+  H2S:
+    DATASET_NAME: how2sign
+    ROOT: ../SOKE/data/How2Sign
+    CSL_ROOT: ../SOKE/data/CSL-Daily
+    PHOENIX_ROOT: ../SOKE/data/Phoenix_2014T
+    MEAN_PATH: ../SOKE/data/CSL-Daily/mean.pt
+    STD_PATH: ../SOKE/data/CSL-Daily/std.pt
+    MAX_MOTION_LEN: 400
+    MIN_MOTION_LEN: 40
+    MAX_TEXT_LEN: 40
+    PICK_ONE_TEXT: true
+    FRAME_RATE: 20.0
+    UNIT_LEN: 4
+    STD_TEXT: False
+  CODE_PATH: TOKENS_h2s_csl_phoenix/how2sign_whole
+  TASK_PATH: prepare/instructions/template_pretrain.json  # Only T2M task for faster training
+
+METRIC:
+  TYPE: ['TM2TMetrics']
+
+LOSS:
+  LAMBDA_FEATURE: 1.0
+  LAMBDA_VELOCITY: 0.0
+  LAMBDA_COMMIT: 0.02
+  LAMBDA_CLS: 1.0
+  ABLATION:
+    RECONS_LOSS: 'l1_smooth'
+
+model:
+  target: mGPT.models.mgpt.MotionGPT
+  params:
+    condition: 'text'
+    task: 't2m'
+    lm: ${lm.default}
+    motion_vae: ${vq.default}
+    hand_vae_cfg: null
+    rhand_vae_cfg: null
+
+LOGGER:
+  TYPE: ['wandb']
+  VAL_EVERY_STEPS: 10
+  WANDB:
+    params:
+      project: SLG
