@@ -1,0 +1,22 @@
+# Large FSQ-based VQ-VAE Configuration
+# Uses larger codebook size for higher quality
+#
+# 8^4 = 4096 discrete codes
+
+target: mGPT.archs.mgpt_fsq.FSQVae
+params:
+  # FSQ-specific parameters
+  fsq_levels: [8, 8, 8, 8]  # 8^4 = 4096 discrete codes
+  code_dim: 4
+
+  # Encoder/Decoder parameters
+  output_emb_width: 512
+  down_t: 2
+  stride_t: 2
+  width: 512
+  depth: 3
+  dilation_growth_rate: 3
+  norm: null
+  activation: 'relu'
+  nfeats: ${DATASET.NFEATS}
+  ablation: ${ABLATION}

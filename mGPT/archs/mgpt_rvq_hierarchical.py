@@ -31,7 +31,109 @@ import torch.nn.functional as F
 from typing import Optional, Tuple, List
 from .tools.rvq_hierarchical_blocks import HierarchicalRVQDecoder
 from .tools.t2m_decoder_blocks import T2MStyleQ0Decoder
+from .tools.llamagen_blocks import LlamaGenQ0Decoder
+from .speech_encoder import SpeechEncoder, SPEECH_ENCODER_CONFIGS
+from .pos_encoding import PositionEmbedding
 import clip
+
+# Text encoder configurations
+TEXT_ENCODER_CONFIGS = {
+    'clip': {'dim': 512, 'model': 'ViT-B/32'},
+    'bert': {'dim': 768, 'model': 'bert-base-uncased'},
+    'bert-large': {'dim': 1024, 'model': 'bert-large-uncased'},
+}
+
+
+class TextEncoder(nn.Module):
+    """
+    Switchable text encoder supporting CLIP and BERT.
+
+    Returns token-level embeddings for fine-grained text-motion alignment.
+
+    Usage:
+        encoder = TextEncoder(encoder_type='clip')  # or 'bert', 'bert-large'
+        text_features, attention_mask = encoder(texts)
+        # BERT: (B, seq_len, 768), (B, seq_len) - token-level
+        # CLIP: (B, 1, 512), None - sentence-level
+    """
+
+    def __init__(self, encoder_type: str = 'clip', freeze: bool = True):
+        """
+        Args:
+            encoder_type: One of 'clip', 'bert', 'bert-large'
+            freeze: Whether to freeze encoder weights
+        """
+        super().__init__()
+
+        if encoder_type not in TEXT_ENCODER_CONFIGS:
+            raise ValueError(f"Unknown encoder_type: {encoder_type}. "
+                           f"Choose from {list(TEXT_ENCODER_CONFIGS.keys())}")
+
+        self.encoder_type = encoder_type
+        self.config = TEXT_ENCODER_CONFIGS[encoder_type]
+        self.text_dim = self.config['dim']
+
+        if encoder_type == 'clip':
+            self.model, _ = clip.load(self.config['model'], device='cpu', jit=False)
+        else:
+            # BERT variants
+            from transformers import BertModel, BertTokenizer
+            self.tokenizer = BertTokenizer.from_pretrained(self.config['model'])
+            self.model = BertModel.from_pretrained(self.config['model'])
+
+        # Freeze encoder
+        self._freeze = freeze
+        if freeze:
+            for param in self.model.parameters():
+                param.requires_grad = False
+            self.model.eval()
+
+    def train(self, mode: bool = True):
+        """Override to keep frozen encoder in eval mode."""
+        if self._freeze:
+            return super().train(False)
+        return super().train(mode)
+
+    @property
+    def output_dim(self) -> int:
+        return self.text_dim
+
+    def forward(self, texts: List[str]) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Encode text to features.
+
+        Args:
+            texts: List of text strings
+
+        Returns:
+            text_features: (B, seq_len, text_dim) for BERT (token-level), (B, 1, text_dim) for CLIP
+            attention_mask: (B, seq_len) for masking padding tokens, or None for CLIP
+        """
+        device = next(self.model.parameters()).device
+
+        if self.encoder_type == 'clip':
+            text_tokens = clip.tokenize(texts, truncate=True).to(device)
+            with torch.no_grad():
+                text_features = self.model.encode_text(text_tokens).float()
+            # Add sequence dimension for compatibility: (B, 512) -> (B, 1, 512)
+            text_features = text_features.unsqueeze(1)
+            attention_mask = None  # CLIP doesn't need mask (single token)
+        else:
+            # BERT variants - Return ALL token embeddings (token-level)
+            inputs = self.tokenizer(
+                texts,
+                padding=True,
+                truncation=True,
+                max_length=77,  # Match CLIP's max length
+                return_tensors='pt'
+            ).to(device)
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+                # Use ALL hidden states (token-level), not just CLS!
+                text_features = outputs.last_hidden_state.float()  # (B, seq_len, 768)
+            attention_mask = inputs.attention_mask  # (B, seq_len) - mask padding
+
+        return text_features, attention_mask
 
 
 class HierarchicalRVQGPT(nn.Module):
@@ -56,21 +158,46 @@ class HierarchicalRVQGPT(nn.Module):
         embed_dim=1024,
         block_size=200,
         num_layers=9,
+        num_layers_q0=None,  # NEW: Separate layer count for Q0 decoder (default: num_layers)
+        num_layers_q1=None,  # NEW: Separate layer count for Q1 decoder (default: num_layers)
+        num_layers_q2=None,  # NEW: Separate layer count for Q2 decoder (default: num_layers)
         n_head=16,
         dropout=0.1,
         text_dim=512,
-        clip_model='ViT-B/32',  # CLIP model for text encoding
+        text_encoder_type='clip',  # 'clip', 'bert', or 'bert-large'
+        speech_encoder_type=None,  # NEW: 'hubert-large', 'wavlm-large', etc.
+        use_speech=False,  # NEW: Whether to use speech instead of text
+        n_kv_head=None,  # GQA KV heads for Q0 LlamaGen decoder (default = n_head = standard MHA)
+        drop_path_rate=0.0,  # DropPath rate for Q0 LlamaGen decoder
         pkeep=1.0,  # Probability of keeping GT tokens for cross-decoder conditioning
+        contrastive_speech_ckpt=None,  # Path to contrastive speech_head_best.pt
+        contrastive_proj_dim=512,  # Projection dim used in contrastive training
+        contrastive_num_layers=4,  # Number of transformer layers in contrastive projection head
+        contrastive_nhead=8,  # Number of attention heads in contrastive projection head
+        contrastive_ff_dim=None,  # Feedforward dim in contrastive projection head (default: proj_dim * 4)
+        contrastive_max_seq_len=2000,  # Max sequence length for contrastive positional encoding
+        freeze_contrastive_proj=True,  # Whether to freeze contrastive projection weights
+        q0_decoder_type='llamagen',  # 'llamagen' (prefix-concat) or 'transformer' (cross-attention)
+        q1_use_cond=True,  # Whether Q1 cross-attends to conditioning features (speech/text)
+        q2_use_cond=True,  # Whether Q2 cross-attends to conditioning features (speech/text)
+        # Per-time corrupted RVQ augmentation (T2M-HiFiGPT paper Sec 3.4)
+        corrupt_ratio=0.5,  # τ: fraction of timesteps to corrupt (0.0 = disabled)
     ):
         """
         Args:
             num_vq: Codebook size per quantizer (typically 512)
             embed_dim: Token embedding dimension
             block_size: Maximum sequence length
-            num_layers: Number of transformer layers per decoder
+            num_layers: Number of transformer layers per decoder (default for all)
+            num_layers_q0: Number of layers for Q0 decoder (if None, uses num_layers)
+            num_layers_q1: Number of layers for Q1 decoder (if None, uses num_layers)
+            num_layers_q2: Number of layers for Q2 decoder (if None, uses num_layers)
             n_head: Number of attention heads
             dropout: Dropout probability
-            text_dim: Text feature dimension (512 for CLIP, 1024 for T5)
+            text_dim: Text feature dimension (auto-set based on text_encoder_type if not specified)
+            text_encoder_type: Type of text encoder ('clip', 'bert', 'bert-large')
+            speech_encoder_type: Type of speech encoder ('hubert-large', 'wavlm-large', 'whisper-large-v3', etc.)
+            use_speech: If True, use speech encoder instead of text encoder
             pkeep: Probability of keeping GT tokens for hierarchical conditioning
                    1.0 = full teacher forcing (100% GT)
                    0.5 = scheduled sampling (50% GT, 50% predicted)
@@ -78,59 +205,186 @@ class HierarchicalRVQGPT(nn.Module):
         """
         super().__init__()
 
+        # Set decoder-specific layer counts (default to num_layers if not specified)
+        self.num_layers_q0 = num_layers_q0 if num_layers_q0 is not None else num_layers
+        self.num_layers_q1 = num_layers_q1 if num_layers_q1 is not None else num_layers
+        self.num_layers_q2 = num_layers_q2 if num_layers_q2 is not None else num_layers
+
         self.num_vq = num_vq
         self.embed_dim = embed_dim
         self.block_size = block_size
-        self.num_layers = num_layers
+        self.num_layers = num_layers  # Keep for backward compatibility
         self.num_quantizers_used = 3  # Use first 3 of 6 quantizers
         self.pkeep = pkeep
         self.eos_token_id = num_vq  # EOS token is index num_vq (e.g., 512)
+        self.text_encoder_type = text_encoder_type
+        self.speech_encoder_type = speech_encoder_type
+        self.use_speech = use_speech
+        self.n_kv_head = n_kv_head if n_kv_head is not None else n_head
+        self.drop_path_rate = drop_path_rate
+        self.q0_decoder_type = q0_decoder_type
+        self.q1_use_cond = q1_use_cond
+        self.q2_use_cond = q2_use_cond
+        self.corrupt_ratio = corrupt_ratio
 
-        print(f"\n{'='*70}")
-        print(f"{'Hierarchical RVQ-GPT':^70}")
-        print(f"{'='*70}")
+        # Initialize encoders based on modality
+        self.use_contrastive_proj = contrastive_speech_ckpt is not None
+        if use_speech:
+            # Speech-driven mode
+            assert speech_encoder_type is not None, "speech_encoder_type must be specified when use_speech=True"
+            print(f"\n{'='*70}")
+            print(f"{'Speech-Driven Hierarchical RVQ-GPT':^70}")
+            print(f"{'='*70}")
+
+            self.speech_encoder = SpeechEncoder(encoder_type=speech_encoder_type, freeze=True)
+            audio_dim = self.speech_encoder.output_dim
+
+            if contrastive_speech_ckpt is not None:
+                # Contrastive-pretrained projection head (sequence output for cross-attention)
+                # Architecture matches ModalityProjectionHead from contrastive training
+                self.contrastive_input_proj = nn.Linear(audio_dim, contrastive_proj_dim)
+                self.contrastive_pos_enc = PositionEmbedding(contrastive_max_seq_len, contrastive_proj_dim, dropout)
+                _ff_dim = contrastive_ff_dim if contrastive_ff_dim is not None else contrastive_proj_dim * 4
+                encoder_layer = nn.TransformerEncoderLayer(
+                    d_model=contrastive_proj_dim,
+                    nhead=contrastive_nhead,
+                    dim_feedforward=_ff_dim,
+                    dropout=dropout,
+                    batch_first=True,
+                )
+                self.contrastive_transformer = nn.TransformerEncoder(encoder_layer, num_layers=contrastive_num_layers)
+
+                # Load pretrained weights
+                import os
+                if os.path.exists(contrastive_speech_ckpt):
+                    ckpt = torch.load(contrastive_speech_ckpt, map_location='cpu')
+                    # Map ModalityProjectionHead keys → our contrastive_ prefixed names
+                    mapped_state = {}
+                    for k, v in ckpt.items():
+                        mapped_state['contrastive_' + k] = v
+                    # Handle pos_enc size mismatch: checkpoint may have shorter embedding
+                    pos_key = 'contrastive_pos_enc.embed'
+                    if pos_key in mapped_state:
+                        ckpt_len = mapped_state[pos_key].shape[0]
+                        model_len = self.contrastive_pos_enc.embed.shape[0]
+                        if ckpt_len < model_len:
+                            padded = self.contrastive_pos_enc.embed.data.clone()
+                            padded[:ckpt_len] = mapped_state[pos_key]
+                            mapped_state[pos_key] = padded
+                    missing, unexpected = self.load_state_dict(mapped_state, strict=False)
+                    print(f"[Contrastive] Loaded {len(mapped_state)} keys from {contrastive_speech_ckpt}")
+                    contrastive_missing = [k for k in missing if 'contrastive_' in k]
+                    if contrastive_missing:
+                        print(f"[Contrastive] Missing keys: {contrastive_missing}")
+                else:
+                    print(f"[WARNING] Contrastive checkpoint not found: {contrastive_speech_ckpt}")
+
+                # Optionally freeze contrastive projection
+                if freeze_contrastive_proj:
+                    for name, p in self.named_parameters():
+                        if 'contrastive_' in name:
+                            p.requires_grad = False
+                    print(f"[Contrastive] Projection head frozen")
+
+                # Bridge: identity if proj_dim == embed_dim, otherwise linear
+                if contrastive_proj_dim == embed_dim:
+                    self.audio_proj = nn.Identity()
+                    conditioning_modality = "Speech (contrastive-pretrained, direct)"
+                    conditioning_dim = f"{audio_dim}D → {contrastive_proj_dim}D (contrastive) = {embed_dim}D (no bridge)"
+                else:
+                    self.audio_proj = nn.Linear(contrastive_proj_dim, embed_dim)
+                    conditioning_modality = "Speech (contrastive-pretrained)"
+                    conditioning_dim = f"{audio_dim}D → {contrastive_proj_dim}D (contrastive) → {embed_dim}D"
+            else:
+                # Simple linear projection (no contrastive pretraining)
+                self.audio_proj = nn.Linear(audio_dim, embed_dim)
+
+                conditioning_modality = "Speech"
+                conditioning_dim = f"{audio_dim}D → {embed_dim}D"
+
+
+            # Disable text encoder
+            self.text_encoder = None
+            self.text_proj = None
+
+            conditioning_encoder = speech_encoder_type
+        else:
+            # Text-driven mode (original)
+            print(f"\n{'='*70}")
+            print(f"{'Text-Driven Hierarchical RVQ-GPT':^70}")
+            print(f"{'='*70}")
+
+            self.text_encoder = TextEncoder(encoder_type=text_encoder_type, freeze=True)
+            text_dim = self.text_encoder.output_dim
+
+            # Text projection: text_dim → embed_dim
+            self.text_proj = nn.Linear(text_dim, embed_dim)
+
+            # Disable speech encoder
+            self.speech_encoder = None
+            self.audio_proj = None
+
+            conditioning_modality = "Text"
+            conditioning_encoder = text_encoder_type
+            conditioning_dim = f"{text_dim}D → {embed_dim}D"
+
         print(f"{'Architecture:':<20} Hierarchical Q0 → Q1 → Q2")
         print(f"{'Quantizers Used:':<20} 3 (first 3 of 6 from RVQ-VAE)")
         print(f"{'Generation Order:':<20} Coarse (Q0) → Medium (Q1) → Fine (Q2)")
-        print(f"{'Num Layers:':<20} {num_layers}")
+        print(f"{'Conditioning:':<20} {conditioning_modality}")
+        print(f"{'Encoder Type:':<20} {conditioning_encoder}")
+        print(f"{'Conditioning Dim:':<20} {conditioning_dim}")
+        print(f"{'Num Layers (Q0):':<20} {self.num_layers_q0}")
+        print(f"{'Num Layers (Q1):':<20} {self.num_layers_q1}")
+        print(f"{'Num Layers (Q2):':<20} {self.num_layers_q2}")
         print(f"{'Embed Dim:':<20} {embed_dim}")
         print(f"{'Num Heads:':<20} {n_head}")
+        if q0_decoder_type == 'llamagen':
+            print(f"{'Num KV Heads (Q0):':<20} {self.n_kv_head}")
+            print(f"{'Q0 Architecture:':<20} LlamaGen (RMSNorm, GQA+RoPE, SwiGLU, prefix-concat)")
+            print(f"{'DropPath Rate (Q0):':<20} {drop_path_rate}")
+        else:
+            print(f"{'Q0 Architecture:':<20} Transformer Decoder (LayerNorm, MHA, GELU, cross-attention)")
         print(f"{'Block Size:':<20} {block_size}")
         print(f"{'Codebook Size:':<20} {num_vq}")
         print(f"{'EOS Token ID:':<20} {num_vq}")
-        print(f"{'Text Dim:':<20} {text_dim}D")
-        print(f"{'CLIP Model:':<20} {clip_model}")
         print(f"{'PKeep:':<20} {pkeep}")
+        print(f"{'Corrupt Ratio:':<20} {corrupt_ratio}" + (" (per-time RVQ augmentation)" if corrupt_ratio > 0 else " (disabled)"))
         print(f"{'='*70}\n")
-
-        # CLIP text encoder
-        self.clip_model, _ = clip.load(clip_model, device='cpu', jit=False)
-        # Freeze CLIP
-        for param in self.clip_model.parameters():
-            param.requires_grad = False
-
-        # Text projection: text_dim → embed_dim
-        self.text_proj = nn.Linear(text_dim, embed_dim)
 
         # === Three Hierarchical Decoders ===
 
-        # Q0 Decoder: Independent (only text conditioning) - COARSE CODES
-        self.q0_decoder = HierarchicalRVQDecoder(
-            num_vq=num_vq,
-            embed_dim=embed_dim,
-            block_size=block_size,
-            num_layers=num_layers,
-            n_head=n_head,
-            dropout=dropout,
-            quantizer_level=0  # Independent
-        )
+        # Q0 Decoder: switchable between LlamaGen and standard Transformer Decoder
+        if q0_decoder_type == 'llamagen':
+            self.q0_decoder = LlamaGenQ0Decoder(
+                num_vq=num_vq,
+                embed_dim=embed_dim,
+                block_size=block_size,
+                num_layers=self.num_layers_q0,
+                n_head=n_head,
+                n_kv_head=self.n_kv_head,
+                dropout=dropout,
+                drop_path_rate=drop_path_rate,
+            )
+        elif q0_decoder_type == 'transformer':
+            self.q0_decoder = HierarchicalRVQDecoder(
+                num_vq=num_vq,
+                embed_dim=embed_dim,
+                block_size=block_size,
+                num_layers=self.num_layers_q0,
+                n_head=n_head,
+                dropout=dropout,
+                quantizer_level=0,
+            )
+        else:
+            raise ValueError(f"Unknown q0_decoder_type: {q0_decoder_type}. Use 'llamagen' or 'transformer'.")
 
         # Q1 Decoder: Conditioned on Q0 - MEDIUM REFINEMENT
         self.q1_decoder = HierarchicalRVQDecoder(
             num_vq=num_vq,
             embed_dim=embed_dim,
             block_size=block_size,
-            num_layers=num_layers,
+            num_layers=self.num_layers_q1,  # Use Q1-specific layer count
             n_head=n_head,
             dropout=dropout,
             quantizer_level=1  # Conditioned on Q0
@@ -141,7 +395,7 @@ class HierarchicalRVQGPT(nn.Module):
             num_vq=num_vq,
             embed_dim=embed_dim,
             block_size=block_size,
-            num_layers=num_layers,
+            num_layers=self.num_layers_q2,  # Use Q2-specific layer count
             n_head=n_head,
             dropout=dropout,
             quantizer_level=2  # Conditioned on Q0+Q1
@@ -166,6 +420,37 @@ class HierarchicalRVQGPT(nn.Module):
         elif isinstance(module, nn.LayerNorm):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
+
+    def _corrupt_per_time(self, motion_codes: torch.Tensor) -> torch.Tensor:
+        """
+        Per-time corrupted RVQ augmentation (T2M-HiFiGPT paper Sec 3.4).
+
+        Randomly select corrupt_ratio fraction of timesteps and replace the
+        ENTIRE row (all quantizers) with random codes. This forces the decoder
+        to learn to recover from corrupted autoregressive inputs, reducing
+        exposure bias.
+
+        Args:
+            motion_codes: (B, T, num_q) - GT motion token indices
+
+        Returns:
+            corrupted_codes: (B, T, num_q) - Corrupted motion codes
+        """
+        B, T, num_q = motion_codes.shape
+        device = motion_codes.device
+
+        # Per-sample, per-timestep mask: True = corrupt this timestep
+        corrupt_mask = torch.rand(B, T, device=device) < self.corrupt_ratio  # (B, T)
+
+        # Generate random codes for corrupted positions
+        random_codes = torch.randint(0, self.num_vq, (B, T, num_q), device=device)
+
+        # Expand mask to cover all quantizers: (B, T) -> (B, T, num_q)
+        corrupt_mask = corrupt_mask.unsqueeze(-1).expand_as(motion_codes)
+
+        # Replace corrupted timesteps with random codes
+        corrupted = torch.where(corrupt_mask, random_codes, motion_codes)
+        return corrupted
 
     def forward(
         self,
@@ -198,75 +483,143 @@ class HierarchicalRVQGPT(nn.Module):
         if motion_codes.dim() == 3 and motion_codes.shape[-1] == 6:
             motion_codes = motion_codes[:, :, :3]  # (B, T, 3)
 
-        # Split into Q0, Q1, Q2
-        motion_q0 = motion_codes[:, :, 0]  # (B, T)
-        motion_q1 = motion_codes[:, :, 1]  # (B, T)
-        motion_q2 = motion_codes[:, :, 2]  # (B, T)
+        # Per-time corrupted RVQ augmentation (training only)
+        # Corrupt the INPUT tokens but keep GT targets for loss computation
+        if self.training and self.corrupt_ratio > 0:
+            input_codes = self._corrupt_per_time(motion_codes)  # corrupted copy
+        else:
+            input_codes = motion_codes
+
+        # GT targets (always clean, for loss computation)
+        target_q0 = motion_codes[:, :, 0]  # (B, T)
+        target_q1 = motion_codes[:, :, 1]  # (B, T)
+        target_q2 = motion_codes[:, :, 2]  # (B, T)
+
+        # Input tokens (possibly corrupted, fed to decoders)
+        motion_q0 = input_codes[:, :, 0]  # (B, T)
+        motion_q1 = input_codes[:, :, 1]  # (B, T)
+        motion_q2 = input_codes[:, :, 2]  # (B, T)
 
         B, T = motion_q0.shape
         device = motion_q0.device
 
-        # Project text to decoder dimension
+        # Project conditioning features to decoder dimension
         if text_features.dim() == 2:
             text_features = text_features.unsqueeze(1)  # (B, text_dim) → (B, 1, text_dim)
-        text_context = self.text_proj(text_features)  # (B, S, embed_dim)
+        if self.text_proj is not None:
+            text_context = self.text_proj(text_features)  # (B, S, embed_dim)
+        else:
+            # Speech mode: features already projected by audio_proj in __call__
+            text_context = text_features
 
         # Hierarchical forward: Q0 → Q1 → Q2
 
-        # 1. Q0 forward (first in hierarchy - only text conditioning)
-        logits_q0 = self.q0_decoder(
-            idx=motion_q0,
-            text_context=text_context,
-            text_mask=text_mask
-        )
+        # 1. Q0 forward
+        if self.q0_decoder_type == 'llamagen':
+            logits_q0 = self.q0_decoder(
+                idx=motion_q0,
+                cond_context=text_context,
+                cond_mask=text_mask,
+            )
+        else:
+            logits_q0 = self.q0_decoder(
+                idx=motion_q0,
+                text_context=text_context,
+                text_mask=text_mask,
+            )
 
         # Determine Q0 tokens for conditioning Q1
         # pkeep controls the probability of using GT vs predicted tokens
+        # Note: always use clean GT (target_q0) for the GT branch, not corrupted input
         if self.training and pkeep < 1.0:
             # Scheduled sampling: randomly mix GT and predicted tokens (per-sample)
             pred_q0 = logits_q0.argmax(dim=-1)  # (B, T)
             mask = torch.rand(B, device=device) < pkeep  # (B,)
             mask = mask.unsqueeze(1).expand(-1, T)  # (B, T)
-            q0_for_conditioning = torch.where(mask, motion_q0, pred_q0)
+            q0_for_conditioning = torch.where(mask, target_q0, pred_q0)
         else:
             # Full teacher forcing (pkeep=1.0): use GT tokens
-            q0_for_conditioning = motion_q0
+            q0_for_conditioning = target_q0
 
         q0_embeddings = self.q0_decoder.get_embeddings(q0_for_conditioning)
 
-        # 2. Q1 forward (conditioned on Q0)
+        # 2. Q1 forward (conditioned on Q0, optionally on speech/text)
         logits_q1 = self.q1_decoder(
             idx=motion_q1,
-            text_context=text_context,
-            text_mask=text_mask,
-            prev_quantizers_context=q0_embeddings  # Conditioned on Q0
+            text_context=text_context if self.q1_use_cond else None,
+            text_mask=text_mask if self.q1_use_cond else None,
+            prev_quantizers_context=q0_embeddings
         )
 
         # Determine Q1 tokens for conditioning Q2
         # pkeep controls the probability of using GT vs predicted tokens
+        # Note: always use clean GT (target_q1) for the GT branch, not corrupted input
         if self.training and pkeep < 1.0:
             # Scheduled sampling: randomly mix GT and predicted tokens (per-sample)
             pred_q1 = logits_q1.argmax(dim=-1)  # (B, T)
             mask = torch.rand(B, device=device) < pkeep  # (B,)
             mask = mask.unsqueeze(1).expand(-1, T)  # (B, T)
-            q1_for_conditioning = torch.where(mask, motion_q1, pred_q1)
+            q1_for_conditioning = torch.where(mask, target_q1, pred_q1)
         else:
             # Full teacher forcing (pkeep=1.0): use GT tokens
-            q1_for_conditioning = motion_q1
+            q1_for_conditioning = target_q1
 
         q1_embeddings = self.q1_decoder.get_embeddings(q1_for_conditioning)
 
-        # 3. Q2 forward (conditioned on Q0+Q1)
-        # Concatenate Q0 and Q1 embeddings
+        # 3. Q2 forward (conditioned on Q0+Q1, optionally on speech/text)
         q0_q1_embeddings = torch.cat([q0_embeddings, q1_embeddings], dim=1)
         logits_q2 = self.q2_decoder(
             idx=motion_q2,
-            text_context=text_context,
-            text_mask=text_mask,
-            prev_quantizers_context=q0_q1_embeddings  # Conditioned on Q0+Q1
+            text_context=text_context if self.q2_use_cond else None,
+            text_mask=text_mask if self.q2_use_cond else None,
+            prev_quantizers_context=q0_q1_embeddings
         )
 
         return logits_q0, logits_q1, logits_q2
+
+    @torch.no_grad()
+    def generate_conditional(
+        self,
+        texts: Optional[List[str]] = None,
+        audio_waveforms: Optional[torch.Tensor] = None,
+        max_len: int = 50,
+        do_sample: bool = True,
+        temperature: float = 1.0,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+    ) -> Tuple[torch.Tensor, List[int]]:
+        """
+        High-level generation method that handles both text and speech input.
+
+        Args:
+            texts: List[str] - Text descriptions (for text mode)
+            audio_waveforms: (B, num_samples) - Raw audio at 16kHz (for speech mode)
+            max_len: Maximum generation length
+            do_sample: Whether to sample or use greedy decoding
+            temperature: Sampling temperature
+            top_k: Top-k sampling
+            top_p: Nucleus sampling
+
+        Returns:
+            generated_codes: (B, actual_len, 3) - Generated Q0, Q1, Q2 codes (EOS tokens removed)
+            lengths: List[int] - Actual generated lengths per sample
+        """
+        # Encode conditioning modality
+        if self.use_speech:
+            if audio_waveforms is None:
+                raise ValueError("audio_waveforms must be provided in speech mode")
+            audio_features, audio_mask = self.encode_audio(audio_waveforms)
+            conditioning_features = self.project_audio(audio_features, audio_mask)
+            conditioning_mask = audio_mask
+        else:
+            if texts is None:
+                raise ValueError("texts must be provided in text mode")
+            text_features, text_mask = self.encode_text(texts)
+            conditioning_features = text_features
+            conditioning_mask = text_mask
+
+        # Call the low-level generate method
+        return self.generate(conditioning_features, conditioning_mask, max_len, do_sample, temperature, top_k, top_p)
 
     @torch.no_grad()
     def generate(
@@ -280,7 +633,13 @@ class HierarchicalRVQGPT(nn.Module):
         top_p: Optional[float] = None,
     ) -> Tuple[torch.Tensor, List[int]]:
         """
-        Autoregressive generation with hierarchical conditioning and EOS stopping.
+        Low-level autoregressive generation with KV cache for Q0 and hierarchical conditioning.
+
+        Q0 uses LlamaGen-style KV cache for efficient generation:
+        1. Prefill: process conditioning prefix once, cache K/V
+        2. Decode: generate one Q0 token at a time using cached K/V
+
+        Q1/Q2 remain unchanged (full recomputation each step).
 
         Args:
             text_features: (B, S, text_dim) - Text features
@@ -297,11 +656,16 @@ class HierarchicalRVQGPT(nn.Module):
         """
         B = text_features.shape[0]
         device = text_features.device
+        dtype = text_features.dtype
 
-        # Project text
+        # Project conditioning features
         if text_features.dim() == 2:
             text_features = text_features.unsqueeze(1)
-        text_context = self.text_proj(text_features)
+        if self.text_proj is not None:
+            text_context = self.text_proj(text_features)
+        else:
+            # Speech mode: features already projected by audio_proj in generate_conditional
+            text_context = text_features
 
         # Clamp max_len to block_size (following SOKE's approach)
         max_len = min(max_len, self.block_size)
@@ -315,75 +679,131 @@ class HierarchicalRVQGPT(nn.Module):
         finished = torch.zeros(B, dtype=torch.bool, device=device)
         lengths = torch.zeros(B, dtype=torch.long, device=device)
 
-        # Autoregressive generation
-        for t in range(max_len):
-            # Step 1: Generate Q0 token
-            logits_q0 = self.q0_decoder(
-                idx=q0_tokens if q0_tokens.shape[1] > 0 else torch.zeros((B, 1), dtype=torch.long, device=device),
-                text_context=text_context,
-                text_mask=text_mask
-            )
-            logits_q0_t = logits_q0[:, -1, :] / temperature  # (B, num_vq+1)
+        if self.q0_decoder_type == 'llamagen':
+            # === LlamaGen: KV cache inference ===
+            cls_token_num = text_context.shape[1]
+            self.q0_decoder.setup_caches(B, cls_token_num + max_len, dtype)
 
+            # Prefill: process conditioning prefix, cache K/V
+            cond_input_pos = torch.arange(cls_token_num, device=device)
+            q0_prefill_logits = self.q0_decoder.generate_prefill(
+                cond_context=text_context,
+                input_pos=cond_input_pos,
+                cond_mask=text_mask,
+            )
+            logits_q0_t = q0_prefill_logits[:, -1, :] / temperature
             if do_sample:
                 q0_t = self._sample(logits_q0_t, top_k=top_k, top_p=top_p)
             else:
                 q0_t = logits_q0_t.argmax(dim=-1)
 
-            # Check for EOS in Q0 (primary stopping criterion)
-            eos_mask = (q0_t == self.eos_token_id) & ~finished
-            lengths[eos_mask] = t
-            finished = finished | eos_mask
+            for t in range(max_len):
+                if t > 0:
+                    input_pos = torch.tensor([cls_token_num + t], device=device)
+                    q0_logits = self.q0_decoder.generate_one_token(
+                        idx=q0_t, input_pos=input_pos,
+                        cond_mask=text_mask, cls_token_num=cls_token_num,
+                    )
+                    logits_q0_t = q0_logits[:, -1, :] / temperature
+                    if do_sample:
+                        q0_t = self._sample(logits_q0_t, top_k=top_k, top_p=top_p)
+                    else:
+                        q0_t = logits_q0_t.argmax(dim=-1)
+                else:
+                    input_pos = torch.tensor([cls_token_num], device=device)
+                    self.q0_decoder.generate_one_token(
+                        idx=q0_t, input_pos=input_pos,
+                        cond_mask=text_mask, cls_token_num=cls_token_num,
+                    )
 
-            # If all samples finished, break
-            if finished.all():
-                break
+                # Check EOS
+                eos_mask = (q0_t == self.eos_token_id) & ~finished
+                lengths[eos_mask] = t
+                finished = finished | eos_mask
+                if finished.all():
+                    break
 
-            # For finished samples, replace EOS with a valid token (0) to avoid embedding errors
-            q0_t = torch.where(finished, torch.zeros_like(q0_t), q0_t)
+                q0_t = torch.where(finished, torch.zeros_like(q0_t), q0_t)
+                q0_tokens = torch.cat([q0_tokens, q0_t.unsqueeze(1)], dim=1)
+                q0_emb = self.q0_decoder.get_embeddings(q0_tokens)
 
-            q0_tokens = torch.cat([q0_tokens, q0_t.unsqueeze(1)], dim=1)
-            q0_emb = self.q0_decoder.get_embeddings(q0_tokens)
+                # Q1
+                logits_q1 = self.q1_decoder(
+                    idx=q1_tokens if q1_tokens.shape[1] > 0 else torch.zeros((B, 1), dtype=torch.long, device=device),
+                    text_context=text_context if self.q1_use_cond else None,
+                    text_mask=text_mask if self.q1_use_cond else None,
+                    prev_quantizers_context=q0_emb,
+                )
+                logits_q1_t = logits_q1[:, -1, :] / temperature
+                q1_t = self._sample(logits_q1_t, top_k=top_k, top_p=top_p) if do_sample else logits_q1_t.argmax(dim=-1)
+                q1_t = torch.where(finished, torch.zeros_like(q1_t), q1_t)
+                q1_tokens = torch.cat([q1_tokens, q1_t.unsqueeze(1)], dim=1)
+                q1_emb = self.q1_decoder.get_embeddings(q1_tokens)
 
-            # Step 2: Generate Q1 token (conditioned on Q0)
-            logits_q1 = self.q1_decoder(
-                idx=q1_tokens if q1_tokens.shape[1] > 0 else torch.zeros((B, 1), dtype=torch.long, device=device),
-                text_context=text_context,
-                text_mask=text_mask,
-                prev_quantizers_context=q0_emb
-            )
-            logits_q1_t = logits_q1[:, -1, :] / temperature
+                # Q2
+                q0_q1_emb = torch.cat([q0_emb, q1_emb], dim=1)
+                logits_q2 = self.q2_decoder(
+                    idx=q2_tokens if q2_tokens.shape[1] > 0 else torch.zeros((B, 1), dtype=torch.long, device=device),
+                    text_context=text_context if self.q2_use_cond else None,
+                    text_mask=text_mask if self.q2_use_cond else None,
+                    prev_quantizers_context=q0_q1_emb,
+                )
+                logits_q2_t = logits_q2[:, -1, :] / temperature
+                q2_t = self._sample(logits_q2_t, top_k=top_k, top_p=top_p) if do_sample else logits_q2_t.argmax(dim=-1)
+                q2_t = torch.where(finished, torch.zeros_like(q2_t), q2_t)
+                q2_tokens = torch.cat([q2_tokens, q2_t.unsqueeze(1)], dim=1)
 
-            if do_sample:
-                q1_t = self._sample(logits_q1_t, top_k=top_k, top_p=top_p)
-            else:
-                q1_t = logits_q1_t.argmax(dim=-1)
+            self.q0_decoder.clear_caches()
 
-            # For finished samples, use placeholder
-            q1_t = torch.where(finished, torch.zeros_like(q1_t), q1_t)
+        else:
+            # === Transformer Decoder: full-forward inference (same as Q1/Q2) ===
+            for t in range(max_len):
+                # Q0: full forward each step (no KV cache)
+                q0_input = q0_tokens if q0_tokens.shape[1] > 0 else torch.zeros((B, 1), dtype=torch.long, device=device)
+                logits_q0 = self.q0_decoder(
+                    idx=q0_input,
+                    text_context=text_context,
+                    text_mask=text_mask,
+                )
+                logits_q0_t = logits_q0[:, -1, :] / temperature
+                q0_t = self._sample(logits_q0_t, top_k=top_k, top_p=top_p) if do_sample else logits_q0_t.argmax(dim=-1)
 
-            q1_tokens = torch.cat([q1_tokens, q1_t.unsqueeze(1)], dim=1)
-            q1_emb = self.q1_decoder.get_embeddings(q1_tokens)
+                # Check EOS
+                eos_mask = (q0_t == self.eos_token_id) & ~finished
+                lengths[eos_mask] = t
+                finished = finished | eos_mask
+                if finished.all():
+                    break
 
-            # Step 3: Generate Q2 token (conditioned on Q0+Q1)
-            q0_q1_emb = torch.cat([q0_emb, q1_emb], dim=1)
-            logits_q2 = self.q2_decoder(
-                idx=q2_tokens if q2_tokens.shape[1] > 0 else torch.zeros((B, 1), dtype=torch.long, device=device),
-                text_context=text_context,
-                text_mask=text_mask,
-                prev_quantizers_context=q0_q1_emb
-            )
-            logits_q2_t = logits_q2[:, -1, :] / temperature
+                q0_t = torch.where(finished, torch.zeros_like(q0_t), q0_t)
+                q0_tokens = torch.cat([q0_tokens, q0_t.unsqueeze(1)], dim=1)
+                q0_emb = self.q0_decoder.get_embeddings(q0_tokens)
 
-            if do_sample:
-                q2_t = self._sample(logits_q2_t, top_k=top_k, top_p=top_p)
-            else:
-                q2_t = logits_q2_t.argmax(dim=-1)
+                # Q1
+                logits_q1 = self.q1_decoder(
+                    idx=q1_tokens if q1_tokens.shape[1] > 0 else torch.zeros((B, 1), dtype=torch.long, device=device),
+                    text_context=text_context if self.q1_use_cond else None,
+                    text_mask=text_mask if self.q1_use_cond else None,
+                    prev_quantizers_context=q0_emb,
+                )
+                logits_q1_t = logits_q1[:, -1, :] / temperature
+                q1_t = self._sample(logits_q1_t, top_k=top_k, top_p=top_p) if do_sample else logits_q1_t.argmax(dim=-1)
+                q1_t = torch.where(finished, torch.zeros_like(q1_t), q1_t)
+                q1_tokens = torch.cat([q1_tokens, q1_t.unsqueeze(1)], dim=1)
+                q1_emb = self.q1_decoder.get_embeddings(q1_tokens)
 
-            # For finished samples, use placeholder
-            q2_t = torch.where(finished, torch.zeros_like(q2_t), q2_t)
-
-            q2_tokens = torch.cat([q2_tokens, q2_t.unsqueeze(1)], dim=1)
+                # Q2
+                q0_q1_emb = torch.cat([q0_emb, q1_emb], dim=1)
+                logits_q2 = self.q2_decoder(
+                    idx=q2_tokens if q2_tokens.shape[1] > 0 else torch.zeros((B, 1), dtype=torch.long, device=device),
+                    text_context=text_context if self.q2_use_cond else None,
+                    text_mask=text_mask if self.q2_use_cond else None,
+                    prev_quantizers_context=q0_q1_emb,
+                )
+                logits_q2_t = logits_q2[:, -1, :] / temperature
+                q2_t = self._sample(logits_q2_t, top_k=top_k, top_p=top_p) if do_sample else logits_q2_t.argmax(dim=-1)
+                q2_t = torch.where(finished, torch.zeros_like(q2_t), q2_t)
+                q2_tokens = torch.cat([q2_tokens, q2_t.unsqueeze(1)], dim=1)
 
         # Set lengths for samples that didn't hit EOS (reached max_len)
         lengths[~finished] = q0_tokens.shape[1]
@@ -438,38 +858,94 @@ class HierarchicalRVQGPT(nn.Module):
     # Compatibility methods for MotionGPT training interface
     # ========================================================================
 
-    def encode_text(self, texts: List[str]) -> torch.Tensor:
+    def encode_text(self, texts: List[str]) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
-        Encode text using CLIP.
+        Encode text using the configured text encoder (CLIP/BERT).
 
         Args:
             texts: List[str] - Text descriptions
 
         Returns:
-            text_features: (B, text_dim) - CLIP text features
+            text_features: (B, seq_len, text_dim) - Token-level text features (BERT) or (B, 1, text_dim) (CLIP)
+            attention_mask: (B, seq_len) - Attention mask for padding tokens, or None for CLIP
         """
-        device = next(self.parameters()).device
-        text_tokens = clip.tokenize(texts, truncate=True).to(device)
-        with torch.no_grad():
-            text_features = self.clip_model.encode_text(text_tokens).float()
-        return text_features
+        if self.text_encoder is None:
+            raise ValueError("Text encoder not initialized. Set use_speech=False to use text mode.")
+        return self.text_encoder(texts)
 
-    def __call__(self, texts, motion_tokens, lengths, tasks=None):
+    def encode_audio(self, audio_waveforms: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Encode audio waveforms using the configured speech encoder (HuBERT/WavLM/Whisper).
+
+        Args:
+            audio_waveforms: (B, num_samples) - Raw audio at 16kHz
+
+        Returns:
+            audio_features: (B, seq_len, audio_dim) - Frame-level audio features
+            attention_mask: (B, seq_len) - Attention mask for valid frames
+        """
+        if self.speech_encoder is None:
+            raise ValueError("Speech encoder not initialized. Set use_speech=True to use speech mode.")
+        return self.speech_encoder(audio_waveforms)
+
+    def project_audio(self, audio_features: torch.Tensor, audio_mask: torch.Tensor) -> torch.Tensor:
+        """
+        Project audio features to decoder dimension, optionally through contrastive projection head.
+
+        Args:
+            audio_features: (B, seq_len, audio_dim) from encode_audio
+            audio_mask: (B, seq_len) attention mask
+
+        Returns:
+            conditioning_features: (B, seq_len, embed_dim)
+        """
+        if self.use_contrastive_proj:
+            x = self.contrastive_input_proj(audio_features)
+            x = self.contrastive_pos_enc(x)
+            pad_mask = ~audio_mask.bool() if audio_mask is not None else None
+            x = self.contrastive_transformer(x, src_key_padding_mask=pad_mask)
+            return self.audio_proj(x)
+        else:
+            return self.audio_proj(audio_features)
+
+    def __call__(self, texts=None, audio_waveforms=None, motion_tokens=None, lengths=None, tasks=None,
+                 speech_feats=None, speech_mask=None):
         """
         Training forward pass compatible with MotionGPT interface.
         This method is called by train_lm_forward() in mgpt.py.
 
         Args:
-            texts: List[str] - Text descriptions
+            texts: List[str] - Text descriptions (for text mode)
+            audio_waveforms: (B, num_samples) - Raw audio at 16kHz (for speech mode)
             motion_tokens: (B, T, num_quantizers) - Ground truth motion codes
             lengths: List[int] - Sequence lengths (in tokens, not frames)
             tasks: Dict - Task information (not used)
+            speech_feats: (B, T_s, D) - Precomputed speech encoder features (skip encode_audio)
+            speech_mask: (B, T_s) - Mask for precomputed speech features
 
         Returns:
             Object with .loss attribute containing the total cross-entropy loss
         """
-        # Encode text with CLIP
-        text_features = self.encode_text(texts)  # (B, 512)
+        # Encode conditioning modality (text or speech)
+        if self.use_speech:
+            if speech_feats is not None:
+                # Precomputed speech features: skip encode_audio, go directly to project_audio
+                conditioning_features = self.project_audio(speech_feats, speech_mask)
+                conditioning_mask = speech_mask
+            elif audio_waveforms is not None:
+                # Raw audio waveform mode
+                audio_features, audio_mask = self.encode_audio(audio_waveforms)
+                conditioning_features = self.project_audio(audio_features, audio_mask)
+                conditioning_mask = audio_mask
+            else:
+                raise ValueError("speech_feats or audio_waveforms must be provided in speech mode")
+        else:
+            # Text mode (original)
+            if texts is None:
+                raise ValueError("texts must be provided in text mode")
+            text_features, text_mask = self.encode_text(texts)  # (B, seq_len, text_dim), (B, seq_len) or None
+            conditioning_features = text_features
+            conditioning_mask = text_mask
 
         # Extract first 3 quantizers if input has 6
         if motion_tokens.dim() == 3 and motion_tokens.shape[-1] == 6:
@@ -500,8 +976,8 @@ class HierarchicalRVQGPT(nn.Module):
                 targets_q1[i, seq_len] = self.eos_token_id
                 targets_q2[i, seq_len] = self.eos_token_id
 
-        # Call the main forward method
-        logits_q0, logits_q1, logits_q2 = self.forward(motion_tokens, text_features)
+        # Call the main forward method with conditioning features
+        logits_q0, logits_q1, logits_q2 = self.forward(motion_tokens, conditioning_features, text_mask=conditioning_mask)
 
         # Logits are for positions [0:T-1] predicting [1:T]
         logits_q0 = logits_q0[:, :-1, :]  # (B, T-1, num_vq+1)
@@ -566,13 +1042,15 @@ class HierarchicalRVQGPT(nn.Module):
 
         return LossOutput(total_loss, loss_q0, loss_q1, loss_q2, acc_q0, acc_q1, acc_q2)
 
-    def generate_conditional(self, texts=None, lengths=None, stage='test', tasks=None, **kwargs):
+    def generate_conditional(self, texts=None, lengths=None, stage='test', tasks=None,
+                             audio_waveforms=None, **kwargs):
         """
         Generation method compatible with MotionGPT interface.
         This method is called by val_t2m_forward() in mgpt.py.
 
         Args:
-            texts: List[str] - Text descriptions
+            texts: List[str] - Text descriptions (for text mode)
+            audio_waveforms: (B, num_samples) - Raw audio at 16kHz (for speech mode)
             lengths: List[int] or Tensor - Target generation lengths (used as max_len hint)
             stage: str - 'test' or 'val'
             tasks: Dict - Task information (not used)
@@ -580,8 +1058,19 @@ class HierarchicalRVQGPT(nn.Module):
         Returns:
             List[Tensor] - List of (T_i, 3) tensors, one per sample (variable length due to EOS)
         """
-        # Encode text with CLIP
-        text_features = self.encode_text(texts)  # (B, 512)
+        # Encode conditioning modality (text or speech)
+        if self.use_speech:
+            if audio_waveforms is None:
+                raise ValueError("audio_waveforms must be provided in speech mode")
+            audio_features, audio_mask = self.encode_audio(audio_waveforms)
+            conditioning_features = self.project_audio(audio_features, audio_mask)
+            conditioning_mask = audio_mask
+        else:
+            if texts is None:
+                raise ValueError("texts must be provided in text mode")
+            text_features, text_mask = self.encode_text(texts)
+            conditioning_features = text_features
+            conditioning_mask = text_mask
 
         # Determine max generation length
         # NOTE: lengths are in frames, need to convert to tokens (divide by unit_length=4)
@@ -596,9 +1085,10 @@ class HierarchicalRVQGPT(nn.Module):
         # Clamp to block_size to avoid exceeding positional embedding range
         max_len = min(max_len, self.block_size)
 
-        # Generate using the main generate method (now returns codes and lengths)
+        # Generate using the main generate method
         generated_codes, gen_lengths = self.generate(
-            text_features=text_features,
+            text_features=conditioning_features,
+            text_mask=conditioning_mask,
             max_len=max_len,
             do_sample=True,
             temperature=1.0
@@ -650,7 +1140,7 @@ class HierarchicalRVQGPT_6_layer(nn.Module):
         n_head=16,
         dropout=0.1,
         text_dim=512,
-        clip_model='ViT-B/32',
+        text_encoder_type='clip',  # 'clip', 'bert', or 'bert-large'
         pkeep=1.0,
         conditioning_mode='chain',  # 'chain' or 'full'
     ):
@@ -666,6 +1156,12 @@ class HierarchicalRVQGPT_6_layer(nn.Module):
         self.pkeep = pkeep
         self.eos_token_id = num_vq
         self.conditioning_mode = conditioning_mode
+        self.text_encoder_type = text_encoder_type
+
+        # Initialize text encoder
+        self.text_encoder = TextEncoder(encoder_type=text_encoder_type, freeze=True)
+        # Override text_dim with actual encoder output dim
+        text_dim = self.text_encoder.output_dim
 
         print(f"\n{'='*70}")
         print(f"{'Hierarchical RVQ-GPT (6-Layer)':^70}")
@@ -682,12 +1178,9 @@ class HierarchicalRVQGPT_6_layer(nn.Module):
         print(f"{'Num Heads:':<20} {n_head}")
         print(f"{'Block Size:':<20} {block_size}")
         print(f"{'Codebook Size:':<20} {num_vq}")
+        print(f"{'Text Encoder:':<20} {text_encoder_type}")
+        print(f"{'Text Dim:':<20} {text_dim}D")
         print(f"{'='*70}\n")
-
-        # CLIP text encoder
-        self.clip_model, _ = clip.load(clip_model, device='cpu', jit=False)
-        for param in self.clip_model.parameters():
-            param.requires_grad = False
 
         # Text projection
         self.text_proj = nn.Linear(text_dim, embed_dim)
@@ -903,16 +1396,13 @@ class HierarchicalRVQGPT_6_layer(nn.Module):
         probs = F.softmax(logits, dim=-1)
         return torch.multinomial(probs, num_samples=1).squeeze(1)
 
-    def encode_text(self, texts: List[str]) -> torch.Tensor:
-        device = next(self.parameters()).device
-        text_tokens = clip.tokenize(texts, truncate=True).to(device)
-        with torch.no_grad():
-            text_features = self.clip_model.encode_text(text_tokens).float()
-        return text_features
+    def encode_text(self, texts: List[str]) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Encode text using the configured text encoder (CLIP/BERT)."""
+        return self.text_encoder(texts)
 
     def __call__(self, texts, motion_tokens, lengths, tasks=None):
         """Training forward pass compatible with MotionGPT interface."""
-        text_features = self.encode_text(texts)
+        text_features, text_mask = self.encode_text(texts)
 
         B, T, _ = motion_tokens.shape
         device = motion_tokens.device
@@ -927,7 +1417,7 @@ class HierarchicalRVQGPT_6_layer(nn.Module):
                 if seq_len < T:
                     targets[q_idx][i, seq_len] = self.eos_token_id
 
-        all_logits = self.forward(motion_tokens, text_features)
+        all_logits = self.forward(motion_tokens, text_features, text_mask=text_mask)
 
         # Compute loss with decreasing weights: Q0=1.0, Q1=0.5, Q2=0.25, ...
         total_loss = 0.0
@@ -965,7 +1455,7 @@ class HierarchicalRVQGPT_6_layer(nn.Module):
 
     def generate_conditional(self, texts=None, lengths=None, stage='test', tasks=None, **kwargs):
         """Generation method compatible with MotionGPT interface."""
-        text_features = self.encode_text(texts)
+        text_features, text_mask = self.encode_text(texts)
 
         if lengths is not None:
             if isinstance(lengths, list):
@@ -979,6 +1469,7 @@ class HierarchicalRVQGPT_6_layer(nn.Module):
 
         generated_codes, gen_lengths = self.generate(
             text_features=text_features,
+            text_mask=text_mask,
             max_len=max_len,
             do_sample=True,
             temperature=1.0
@@ -1032,7 +1523,7 @@ class HierarchicalRVQGPT_T2M(nn.Module):
         n_head=16,
         dropout=0.1,
         text_dim=512,
-        clip_model='ViT-B/32',
+        text_encoder_type='clip',  # 'clip', 'bert', or 'bert-large'
         pkeep=1.0,
         scheduled_sampling='t2m',  # Scheduled sampling strategy
     ):
@@ -1046,8 +1537,8 @@ class HierarchicalRVQGPT_T2M(nn.Module):
             num_layers_q1q2: Number of layers for Q1/Q2 decoders (default 3)
             n_head: Number of attention heads
             dropout: Dropout probability
-            text_dim: Text feature dimension (512 for CLIP)
-            clip_model: CLIP model name
+            text_dim: Text feature dimension (auto-set based on text_encoder_type)
+            text_encoder_type: Type of text encoder ('clip', 'bert', 'bert-large')
             pkeep: Probability of keeping GT tokens for hierarchical conditioning
             scheduled_sampling: Scheduled sampling strategy, one of:
                 - 't2m': T2M-GPT style (per-token mask + random replacement)
@@ -1064,8 +1555,14 @@ class HierarchicalRVQGPT_T2M(nn.Module):
         self.num_quantizers_used = 3  # Use first 3 of 6 quantizers
         self.pkeep = pkeep
         self.eos_token_id = num_vq
-        self.text_dim = text_dim
         self.scheduled_sampling = scheduled_sampling
+        self.text_encoder_type = text_encoder_type
+
+        # Initialize text encoder
+        self.text_encoder = TextEncoder(encoder_type=text_encoder_type, freeze=True)
+        # Override text_dim with actual encoder output dim
+        text_dim = self.text_encoder.output_dim
+        self.text_dim = text_dim
 
         # Validate scheduled_sampling
         valid_strategies = ['t2m', 'sample', 'none']
@@ -1085,16 +1582,11 @@ class HierarchicalRVQGPT_T2M(nn.Module):
         print(f"{'Num Heads:':<20} {n_head}")
         print(f"{'Block Size:':<20} {block_size}")
         print(f"{'Codebook Size:':<20} {num_vq}")
+        print(f"{'Text Encoder:':<20} {text_encoder_type}")
         print(f"{'Text Dim:':<20} {text_dim}D")
-        print(f"{'CLIP Model:':<20} {clip_model}")
         print(f"{'PKeep:':<20} {pkeep}")
         print(f"{'Scheduled Sampling:':<20} {scheduled_sampling}")
         print(f"{'='*70}\n")
-
-        # CLIP text encoder
-        self.clip_model, _ = clip.load(clip_model, device='cpu', jit=False)
-        for param in self.clip_model.parameters():
-            param.requires_grad = False
 
         # Q0 Decoder: T2M-GPT style (text prepended to sequence)
         self.q0_decoder = T2MStyleQ0Decoder(
@@ -1461,12 +1953,8 @@ class HierarchicalRVQGPT_T2M(nn.Module):
     # ========================================================================
 
     def encode_text(self, texts: List[str]) -> torch.Tensor:
-        """Encode text using CLIP."""
-        device = next(self.parameters()).device
-        text_tokens = clip.tokenize(texts, truncate=True).to(device)
-        with torch.no_grad():
-            text_features = self.clip_model.encode_text(text_tokens).float()
-        return text_features
+        """Encode text using the configured text encoder (CLIP/BERT)."""
+        return self.text_encoder(texts)
 
     def __call__(self, texts, motion_tokens, lengths, tasks=None):
         """
@@ -1566,7 +2054,7 @@ class HierarchicalRVQGPT_T2M(nn.Module):
 
     def generate_conditional(self, texts=None, lengths=None, stage='test', tasks=None, **kwargs):
         """Generation method compatible with MotionGPT interface."""
-        text_features = self.encode_text(texts)
+        text_features, text_mask = self.encode_text(texts)
 
         if lengths is not None:
             if isinstance(lengths, list):
@@ -1580,6 +2068,7 @@ class HierarchicalRVQGPT_T2M(nn.Module):
 
         generated_codes, gen_lengths = self.generate(
             text_features=text_features,
+            text_mask=text_mask,
             max_len=max_len,
             do_sample=True,
             temperature=1.0

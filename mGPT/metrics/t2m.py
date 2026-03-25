@@ -46,6 +46,9 @@ class TM2TMetrics(Metric):
         self.add_state("phoenix_count_seq",
                        default=torch.tensor(0),
                        dist_reduce_fx="sum")
+        self.add_state("youtube3d_count_seq",
+                       default=torch.tensor(0),
+                       dist_reduce_fx="sum")
 
         self.add_state("how2sign_DTW_MPJPE_PA_lhand",
                        default=torch.tensor([0.0]),
@@ -77,9 +80,20 @@ class TM2TMetrics(Metric):
                        default=torch.tensor([0.0]),
                        dist_reduce_fx="sum")
 
-        self.MR_metrics = ["how2sign_DTW_MPJPE_PA_lhand", "how2sign_DTW_MPJPE_PA_rhand", "how2sign_DTW_MPJPE_PA_body", 
+        self.add_state("youtube3d_DTW_MPJPE_PA_lhand",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        self.add_state("youtube3d_DTW_MPJPE_PA_rhand",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        self.add_state("youtube3d_DTW_MPJPE_PA_body",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+
+        self.MR_metrics = ["how2sign_DTW_MPJPE_PA_lhand", "how2sign_DTW_MPJPE_PA_rhand", "how2sign_DTW_MPJPE_PA_body",
                            "csl_DTW_MPJPE_PA_lhand", "csl_DTW_MPJPE_PA_rhand", "csl_DTW_MPJPE_PA_body",
-                           "phoenix_DTW_MPJPE_PA_lhand", "phoenix_DTW_MPJPE_PA_rhand", "phoenix_DTW_MPJPE_PA_body"]
+                           "phoenix_DTW_MPJPE_PA_lhand", "phoenix_DTW_MPJPE_PA_rhand", "phoenix_DTW_MPJPE_PA_body",
+                           "youtube3d_DTW_MPJPE_PA_lhand", "youtube3d_DTW_MPJPE_PA_rhand", "youtube3d_DTW_MPJPE_PA_body"]
 
         # All metric
         self.metrics = self.MR_metrics
@@ -146,6 +160,7 @@ class TM2TMetrics(Metric):
             if split in ['val', 'test']:
                 '''
                 Note that when align_idx=0, the metric is DTW-JPE; when align_idx=None, the metric is DTW-PA-JPE. But we didn't modify the variable names.
+                Modified to use align_idx=None for DTW-PA-JPE as recommended by the author.
                 '''
                 joint_idx = self.joint_part2idx['upper_body']
                 dist_func = partial(l2_dist_align, wanted=joint_idx, align_idx=0)

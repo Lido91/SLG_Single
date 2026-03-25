@@ -1,0 +1,4 @@
+split,csv_entries,pose_dirs,missing_pose_dirs,extra_pose_dirs
+train,23458,21127,2331,0
+val,2942,2655,287,0
+test,2941,2661,280,0

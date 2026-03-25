@@ -34,8 +34,8 @@ def load_pretrained_vae(cfg, model, logger=None):
             name = k.replace("vae.", "")
             vae_dict[name] = v
     if hasattr(model, 'vae'):
-        model.vae.load_state_dict(vae_dict, strict=True)
+        model.vae.load_state_dict(vae_dict, strict=False)
     else:
-        model.motion_vae.load_state_dict(vae_dict, strict=True)
+        model.motion_vae.load_state_dict(vae_dict, strict=False)
     
     return model

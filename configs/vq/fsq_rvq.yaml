@@ -1,0 +1,32 @@
+# FSQ-based Residual VQ-VAE Configuration
+# Uses Finite Scalar Quantization with residual quantization
+#
+# Each stage uses FSQ instead of learned codebooks, providing:
+# - Hierarchical representation (coarse to fine)
+# - No codebook collapse at any stage
+# - Simpler training
+# - Quantizer dropout for robustness
+
+target: mGPT.archs.mgpt_fsq_rvq.FSQRVQVae
+params:
+  # FSQ-specific parameters
+  num_quantizers: 3          # Number of residual stages (e.g., Q0, Q1, Q2)
+  fsq_levels: [5, 5, 5, 5]  # 5^4 = 625 codes per stage
+  code_dim: 4                # Must match len(fsq_levels)
+
+  # Quantizer dropout (for training robustness)
+  quantize_dropout_prob: 0.2           # 20% chance to drop later quantizers
+  quantize_dropout_cutoff_index: 0     # Always keep first quantizer (Q0)
+  shared_codebook: false               # Separate FSQ per stage
+
+  # Encoder/Decoder parameters
+  output_emb_width: 512
+  down_t: 2
+  stride_t: 2
+  width: 512
+  depth: 3
+  dilation_growth_rate: 3
+  norm: null
+  activation: 'relu'
+  nfeats: ${DATASET.NFEATS}
+  ablation: ${ABLATION}

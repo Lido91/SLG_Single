@@ -18,6 +18,10 @@ def build_callbacks(cfg, logger=None, phase='test', **kwargs):
 
 def getCheckpointCallback(cfg, logger=None, **kwargs):
     callbacks = []
+
+    # Get dataset name from config to determine which metrics to monitor
+    dataset_name = cfg.DATASET.H2S.get('DATASET_NAME', 'how2sign')
+
     # Logging
     metric_monitor = {
         "loss_total": "total/train",
@@ -53,6 +57,11 @@ def getCheckpointCallback(cfg, logger=None, **kwargs):
         "csl_MPJPE_PA_hand": "Metrics/csl_MPJPE_PA_hand",
         "phoenix_MPVPE_PA_all": "Metrics/phoenix_MPVPE_PA_all",
         "phoenix_MPJPE_PA_hand": "Metrics/phoenix_MPJPE_PA_hand",
+        "youtube3d_MPVPE_PA_all": "Metrics/youtube3d_MPVPE_PA_all",
+        "youtube3d_MPJPE_PA_hand": "Metrics/youtube3d_MPJPE_PA_hand",
+        "youtube3d_DTW_MPJPE_PA_lhand": "Metrics/youtube3d_DTW_MPJPE_PA_lhand",
+        "youtube3d_DTW_MPJPE_PA_rhand": "Metrics/youtube3d_DTW_MPJPE_PA_rhand",
+        "youtube3d_DTW_MPJPE_PA_body": "Metrics/youtube3d_DTW_MPJPE_PA_body",
         "BLEU_1": "Metrics/Bleu_1",
         "BLEU_2": "Metrics/Bleu_2",
         "BLEU_3": "Metrics/Bleu_3",
@@ -96,6 +105,8 @@ def getCheckpointCallback(cfg, logger=None, **kwargs):
     # callbacks.append(ModelCheckpoint(**checkpointParams))
 
     metrics = cfg.METRIC.TYPE
+
+    # Build metric_monitor_map dynamically based on dataset_name
     metric_monitor_map = {
         'TemosMetric': {
             'Metrics/APE_root': {
@@ -104,8 +115,8 @@ def getCheckpointCallback(cfg, logger=None, **kwargs):
             },
         },
         'TM2TMetrics': {
-            'Metrics/how2sign_DTW_MPJPE_PA_lhand': {
-                'abbr': 'how2sign_DTW_MPJPE_PA_lhand',
+            f'Metrics/{dataset_name}_DTW_MPJPE_PA_lhand': {
+                'abbr': f'{dataset_name}_DTW_MPJPE_PA_lhand',
                 'mode': 'min'
             },
         },
@@ -120,30 +131,10 @@ def getCheckpointCallback(cfg, logger=None, **kwargs):
             },
         },
         'MRMetrics': {
-            'Metrics/how2sign_MPJPE_PA_hand': {
-                'abbr': 'how2sign_MPJPE_PA_hand',
+            f'Metrics/{dataset_name}_MPJPE_PA_hand': {
+                'abbr': f'{dataset_name}_MPJPE_PA_hand',
                 'mode': 'min'
             },
-            # 'Metrics/how2sign_MPVPE_PA_all': {
-            #     'abbr': 'how2sign_MPVPE_PA_all',
-            #     'mode': 'min'
-            # },
-            # 'Metrics/csl_MPJPE_PA_hand': {
-            #     'abbr': 'csl_MPJPE_PA_hand',
-            #     'mode': 'min'
-            # },
-            # 'Metrics/csl_MPVPE_PA_all': {
-            #     'abbr': 'csl_MPVPE_PA_all',
-            #     'mode': 'min'
-            # },
-            # 'Metrics/phoenix_MPJPE_PA_hand': {
-            #     'abbr': 'phoenix_MPJPE_PA_hand',
-            #     'mode': 'min'
-            # },
-            # 'Metrics/phoenix_MPVPE_PA_all': {
-            #     'abbr': 'phoenix_MPVPE_PA_all',
-            #     'mode': 'min'
-            # },
         },
         'HUMANACTMetrics': {
             'Metrics/Accuracy': {

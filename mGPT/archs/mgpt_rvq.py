@@ -216,6 +216,7 @@ class RVQVae(nn.Module):
 
         Args:
             code_idx: Discrete codes [B, T', num_quantizers] or [T', num_quantizers]
+                      Can contain -1 for padding positions
 
         Returns:
             x_out: Reconstructed motion [B, T, D]
@@ -233,29 +234,17 @@ class RVQVae(nn.Module):
                 # [B, T'] -> [B, T', num_quantizers] - replicate across quantizers (Q0 only mode)
                 code_idx = code_idx.unsqueeze(-1).repeat(1, 1, self.num_quantizers)
 
-        B, T_prime, num_quantizers = code_idx.shape
+        B, T_prime, input_num_quantizers = code_idx.shape
 
-        # Split codes into list: [B, T', num_quantizers] -> List of [B*T']
-        all_indices = []
-        for i in range(num_quantizers):
-            indices = code_idx[:, :, i]  # [B, T']
-            indices_flat = indices.reshape(-1)  # [B*T']
-            all_indices.append(indices_flat)
+        # Use get_codes_from_indices which handles -1 padding correctly
+        # This method masks out -1 indices and sets their embeddings to 0
+        all_codes = self.quantizer.get_codes_from_indices(code_idx)  # [num_quantizers, B, T', code_dim]
 
-        # Dequantize: List of [B*T'] -> [B, code_dim, T']
-        # Note: This is a simplified version; actual implementation may need adjustment
-        x_quantized = None
-        for i, indices in enumerate(all_indices):
-            quantizer = self.quantizer._get_quantizer(i)
-            z_q = quantizer.dequantize(indices)  # [B*T', code_dim]
+        # Sum across quantizers: [num_quantizers, B, T', code_dim] -> [B, T', code_dim]
+        x_quantized = all_codes.sum(dim=0)  # [B, T', code_dim]
 
-            # Reshape to [B, code_dim, T']
-            z_q = z_q.view(B, T_prime, self.code_dim).permute(0, 2, 1).contiguous()
-
-            if x_quantized is None:
-                x_quantized = z_q
-            else:
-                x_quantized = x_quantized + z_q
+        # Permute to [B, code_dim, T'] for decoder
+        x_quantized = x_quantized.permute(0, 2, 1).contiguous()  # [B, code_dim, T']
 
         # Decode: [B, code_dim, T'] -> [B, D, T]
         x_decoder = self.decoder(x_quantized)

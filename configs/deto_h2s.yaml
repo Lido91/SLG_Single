@@ -1,7 +1,7 @@
 NAME: DETO-H2S
 ACCELERATOR: "gpu"
 NUM_NODES: 1
-DEVICE: [0,1,2]
+DEVICE: [0]
 
 TRAIN:
   STAGE: vae
@@ -10,7 +10,7 @@ TRAIN:
   END_EPOCH: 100
   RESUME: ""
   PRETRAINED: ""
-  PRETRAINED_VAE: "experiments/mgpt/debug--DETO-H2S/checkpoints/last.ckpt"
+  PRETRAINED_VAE: 
 
   OPTIM:
     target: AdamW
@@ -26,11 +26,11 @@ TRAIN:
       eta_min: 1e-6
 
 EVAL:
-  BATCH_SIZE: 16
+  BATCH_SIZE: 
   SPLIT: val
 
 TEST:
-  CHECKPOINTS: experiments/mgpt/debug--DETO-H2S/checkpoints/last.ckpt
+  CHECKPOINTS: 
   SPLIT: test
   BATCH_SIZE: 16
   REPLICATION_TIMES: 1
@@ -43,11 +43,11 @@ DATASET:
   WORD_VERTILIZER_PATH: prepare/deps/glove
   H2S:
     DATASET_NAME: how2sign
-    ROOT: ../SOKE/data/How2Sign
-    CSL_ROOT: ../SOKE/data/CSL-Daily
-    PHOENIX_ROOT: ../SOKE/data/Phoenix_2014T
-    MEAN_PATH: ../SOKE/data/CSL-Daily/mean.pt
-    STD_PATH: ../SOKE/data/CSL-Daily/std.pt
+    ROOT: /data/hwu/slg_data/How2Sign
+    CSL_ROOT: /data/hwu/slg_data/CSL-Daily
+    PHOENIX_ROOT: /data/hwu/slg_data/Phoenix_2014T
+    MEAN_PATH: /data/hwu/slg_data/CSL-Daily/mean.pt
+    STD_PATH: /data/hwu/slg_data/CSL-Daily/std.pt
     MAX_MOTION_LEN: 400
     MIN_MOTION_LEN: 40
     MAX_TEXT_LEN: 40

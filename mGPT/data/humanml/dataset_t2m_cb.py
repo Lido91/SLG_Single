@@ -13,7 +13,8 @@ import torch
 import pandas as pd
 from tqdm import tqdm
 from copy import deepcopy
-from .load_data import load_h2s_sample, load_csl_sample, load_phoenix_sample
+from .load_data import load_h2s_sample, load_csl_sample, load_phoenix_sample, load_youtube3d_sample
+from ..audio_utils import load_audio
 
 # Some how2sign ids are broken, failing in pose fitting.
 bad_how2sign_ids = ['0DU7wWLK-QU_0-8-rgb_front', '0ICZi26jdaQ_28-5-rgb_front', '0vNfEYst_tQ_11-8-rgb_front', '13X0vEMNm7M_8-5-rgb_front', '14weIYQswlE_23-8-rgb_front', '1B56XMJ-j1Q_13-8-rgb_front', '1P0oKY4FNyI_0-8-rgb_front', '1dpRaxOTfZs_0-8-rgb_front', '1ei1kVTw23A_29-8-rgb_front', '1spCnuBmWYk_0-8-rgb_front', '2-vXO7MMLJc_0-5-rgb_front', '21PbS6wnHtY_0-5-rgb_front', '3tyfxL2wO-M_0-8-rgb_front', 'BpYDl3AO4B8_0-1-rgb_front', 'CH7AviIr0-0_14-8-rgb_front', 'CJ8RyW9pzKU_6-8-rgb_front', 'D0T7ho08Q3o_25-2-rgb_front', 'Db5SUQvNsHc_18-1-rgb_front', 'Eh697LCFjTw_0-3-rgb_front', 'F-p1IdedNbg_23-8-rgb_front', 'aUBQCNegrYc_13-1-rgb_front', 'cvn7htBA8Xc_9-8-rgb_front', 'czBrBQgZIuc_19-5-rgb_front', 'dbSAB8F8GYc_11-9-rgb_front', 'doMosV-zfCI_7-2-rgb_front', 'dvBdWGLzayI_10-8-rgb_front', 'eBrlZcccILg_26-3-rgb_front', '39FN42e41r0_17-1-rgb_front', 'a4Nxq0QV_WA_9-3-rgb_front', 'fzrJBu2qsM8_11-8-rgb_front', 'g3Cc_1-V31U_12-3-rgb_front']
@@ -42,8 +43,18 @@ class Text2MotionDatasetCB(data.Dataset):
         self.tiny = tiny
         self.unit_length = unit_length
         self.data_root = data_root
+        self.split = split
         self.csl_root = kwargs.get('csl_root', None)
         self.phoenix_root = kwargs.get('phoenix_root', None)
+        self.youtube3d_root = kwargs.get('youtube3d_root', None)
+        self.balanced = kwargs.get('balanced', False)
+        self.gloss = kwargs.get('gloss', '')
+
+        # Audio support for speech-driven generation
+        self.audio_dir = kwargs.get('audio_dir', None)
+        self.use_speech = kwargs.get('use_speech', False)
+        self.precomputed_speech_dir = kwargs.get('precomputed_speech_dir', None)
+        self.use_precomputed_speech = self.precomputed_speech_dir is not None
 
         # Data mean and std
         self.mean = mean
@@ -69,7 +80,7 @@ class Text2MotionDatasetCB(data.Dataset):
             raise NotImplementedError(f"stage {stage} not implemented")
         
         self.all_data = []
-        self.h2s_len = self.csl_len = self.phoenix_len = 0
+        self.h2s_len = self.csl_len = self.phoenix_len = self.youtube3d_len = 0
         if 'how2sign' in dataset_name:
             self.data_dir = os.path.join(data_root, split, 'poses')
             self.csv_path = os.path.join(data_root, split, 're_aligned', 'how2sign_realigned_'+split+'_preprocessed_fps.csv')
@@ -130,7 +141,49 @@ class Text2MotionDatasetCB(data.Dataset):
                 # self.all_data.append({'name': n, 'code': code, 'text': text, 'src': 'phoenix'})
             self.phoenix_len = len(self.ann)
 
-        print(f'Data loading done. All: {len(self.all_data)}, How2Sign: {self.h2s_len}, CSL: {self.csl_len}, Phoenix: {self.phoenix_len}')
+        if 'youtube3d' in dataset_name:
+            self.youtube3d_data_dir = os.path.join(self.youtube3d_root, split, 'poses')
+
+            def _make_youtube3d_csv(suffix: str = "") -> str:
+                return os.path.join(
+                    self.youtube3d_root, split, 're_aligned',
+                    f"youtube_asl_{split}{suffix}.csv"
+                )
+
+            if self.balanced is True:
+                base_suffix = "_filtered"
+            else:
+                base_suffix = ""
+
+            if self.gloss:
+                if self.gloss == "qwen":
+                    youtube3d_csv_path = _make_youtube3d_csv(f"{base_suffix}_qwen8b")
+                elif self.gloss == "t5":
+                    youtube3d_csv_path = _make_youtube3d_csv(f"{base_suffix}_t5")
+                else:
+                    raise ValueError(f"Unknown gloss type: {self.gloss}")
+            else:
+                youtube3d_csv_path = _make_youtube3d_csv(base_suffix)
+
+            youtube3d_csv = pd.read_csv(youtube3d_csv_path)
+            youtube3d_csv['DURATION'] = youtube3d_csv['END_REALIGNED'] - youtube3d_csv['START_REALIGNED']
+            youtube3d_csv = youtube3d_csv[youtube3d_csv['DURATION'] < 30].reset_index(drop=True)
+            youtube3d_ids = youtube3d_csv['SENTENCE_NAME']
+
+            print(f'{split}--loading youtube3d data...', len(youtube3d_ids))
+            for idx in tqdm(range(len(youtube3d_ids))):
+                name = youtube3d_ids[idx]
+                text_val = youtube3d_csv[youtube3d_csv['SENTENCE_NAME'] == name]['SENTENCE'].item()
+                if not isinstance(text_val, str) or pd.isna(text_val):
+                    text_val = "unknown"
+                elif text_val.strip() == "":
+                    text_val = "unknown"
+                fps_val = youtube3d_csv[youtube3d_csv['SENTENCE_NAME'] == name]['fps'].item() if 'fps' in youtube3d_csv.columns else 24
+                self.all_data.append({'name': name, 'fps': fps_val,
+                                      'text': text_val, 'src': 'youtube3d'})
+            self.youtube3d_len = len(youtube3d_ids)
+
+        print(f'Data loading done. All: {len(self.all_data)}, How2Sign: {self.h2s_len}, CSL: {self.csl_len}, Phoenix: {self.phoenix_len}, YouTube3D: {self.youtube3d_len}')
 
         # self.nlp = spacy.load('en_core_web_sm')
         self.std_text = std_text
@@ -163,6 +216,10 @@ class Text2MotionDatasetCB(data.Dataset):
             _, caption, name, m_tokens = load_csl_sample(sample, self.csl_root, need_pose=False, code_path=code_full_path, need_code=need_code)
         elif src == 'phoenix':
             _, caption, name, m_tokens = load_phoenix_sample(sample, self.phoenix_root, need_pose=False, code_path=code_full_path, need_code=need_code)
+        elif src == 'youtube3d':
+            _, caption, name, m_tokens = load_youtube3d_sample(sample, self.youtube3d_data_dir, need_pose=False, code_path=code_full_path, need_code=need_code)
+        else:
+            raise ValueError(f"Unknown source type: {src}")
 
         all_captions = [caption]
         # print(m_tokens.shape)
@@ -190,4 +247,30 @@ class Text2MotionDatasetCB(data.Dataset):
 
         tasks = self.tasks[task_idx]
 
-        return caption, torch.from_numpy(m_tokens).long(), m_length, name, None, None, None, all_captions, tasks, src
+        # Load audio / precomputed speech features
+        audio = None
+        speech_feats = None
+        speech_length = None
+        if self.use_speech:
+            if self.use_precomputed_speech:
+                feat_path = pjoin(self.precomputed_speech_dir, self.split, f'{name}.pt')
+                if os.path.exists(feat_path):
+                    try:
+                        feat_data = torch.load(feat_path, map_location='cpu', weights_only=True)
+                        speech_feats = feat_data['feats']
+                        speech_length = feat_data['length']
+                    except Exception as e:
+                        print(f"Warning: Failed to load precomputed speech for {name}: {e}")
+                else:
+                    print(f"Warning: Missing precomputed speech feature: {feat_path}")
+            elif self.audio_dir:
+                audio_path = pjoin(self.audio_dir, 'speech', f"{self.split}_wavs", f"{name}.wav")
+                if os.path.exists(audio_path):
+                    try:
+                        audio = load_audio(audio_path, target_sr=16000)
+                    except Exception as e:
+                        audio = torch.zeros(16000 * 3)
+                else:
+                    audio = torch.zeros(16000 * 3)
+
+        return caption, torch.from_numpy(m_tokens).long(), m_length, name, None, None, None, all_captions, tasks, src, audio, speech_feats, speech_length

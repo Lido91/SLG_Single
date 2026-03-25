@@ -1,0 +1,52 @@
+# Speech + Motion contrastive learning (no text)
+data:
+  dataset_name: youtube3d
+  root: /data/hwu/slg_data/Youtube3D
+  youtube3d_root: /data/hwu/slg_data/Youtube3D
+  audio_dir: /data/hwu/slg_data/Youtube3D
+  mean_path: /data/hwu/slg_data/Youtube3D/youtube3d_mean.pt
+  std_path: /data/hwu/slg_data/Youtube3D/youtube3d_std.pt
+  max_motion_length: 400
+  min_motion_length: 40
+  unit_length: 4
+  preload_features: False
+  precomputed_feat_dir: /data/hwu/slg_data/Youtube3D/precomputed_feats
+
+# Model
+model:
+  enable_speech: True
+  enable_text: False
+  speech_encoder_type: hubert-large
+  proj_dim: 512
+  num_proj_layers: 4
+  nhead: 8
+  temperature_init: 0.07
+
+# VAE (frozen, pretrained)
+vae:
+  params:
+    nfeats: 133
+    num_quantizers: 3
+    code_dim: 512
+    code_num: 512
+    output_emb_width: 512
+    down_t: 2
+    stride_t: 2
+    width: 512
+    depth: 3
+    dilation_growth_rate: 3
+  checkpoint: "experiments/mgpt/DETO_RVQ_wholebody_3_youtube/checkpoints/min-youtube3d_MPJPE_PA_handepoch=109.ckpt"
+
+# Training
+training:
+  batch_size: 128
+  max_epochs: 100
+  lr: 1e-4
+  weight_decay: 0.01
+  num_workers: 16
+  devices: [0]
+
+# Logging
+logger:
+  project: SContrastiveG
+  name: Contrastive_Speech_Motion_Youtube3d

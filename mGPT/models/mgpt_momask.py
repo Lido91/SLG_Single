@@ -449,6 +449,9 @@ class MoMask(BaseModel):
         feats_rst = torch.zeros_like(feats_ref)
         feats_rst[:, :motion.shape[1], :] = motion
 
+        # Track generated lengths
+        lengths_rst = [motion.shape[1]] * len(lengths)
+
         # Get joints
         feats2joints_result_ref = self.feats2joints(feats_ref)
         feats2joints_result_rst = self.feats2joints(feats_rst)
@@ -473,7 +476,7 @@ class MoMask(BaseModel):
             "joints_rst": joints_rst,
             "vertices_ref": vertices_ref,
             "vertices_rst": vertices_rst,
-            "length": lengths,
+            "lengths_rst": lengths_rst,
         }
 
     # ==================== Main Training Step ====================
@@ -487,6 +490,15 @@ class MoMask(BaseModel):
 
         # Training
         if split == "train":
+            # Linear warm-up for mask/res transformer (matching original MoMask)
+            if self.stage in ("mask_transformer", "res_transformer"):
+                warm_up_iter = getattr(self.hparams.cfg.TRAIN, 'WARM_UP_ITER', 0)
+                if warm_up_iter > 0 and self.global_step < warm_up_iter:
+                    base_lr = self.hparams.cfg.TRAIN.OPTIM.params.lr
+                    current_lr = base_lr * (self.global_step + 1) / (warm_up_iter + 1)
+                    for param_group in self.trainer.optimizers[0].param_groups:
+                        param_group["lr"] = current_lr
+
             if self.stage == "vae":
                 rs_set = self.train_vae_forward(batch)
                 loss = self._losses['losses_train'].update(rs_set)
@@ -538,6 +550,8 @@ class MoMask(BaseModel):
                         vertices_rst=rs_set.get("vertices_rst"),
                         vertices_ref=rs_set.get("vertices_ref"),
                         lengths=lengths,
+                        lengths_rst=rs_set["lengths_rst"],
+                        split=split,
                         src=src,
                         name=name
                     )
@@ -555,6 +569,8 @@ class MoMask(BaseModel):
                         vertices_rst=rs_set.get("vertices_rst"),
                         vertices_ref=rs_set.get("vertices_ref"),
                         lengths=lengths,
+                        lengths_rst=rs_set["lengths_rst"],
+                        split=split,
                         src=src,
                         name=name
                     )
@@ -572,7 +588,11 @@ class MoMask(BaseModel):
         return loss
 
     def configure_optimizers(self):
-        """Configure optimizers based on training stage."""
+        """Configure optimizers based on training stage.
+
+        For mask_transformer and res_transformer stages, uses MultiStepLR
+        with per-iteration stepping and linear warm-up, matching original MoMask.
+        """
         if self.stage == "vae":
             params = self.vae.parameters()
         elif self.stage == "mask_transformer":
@@ -589,10 +609,26 @@ class MoMask(BaseModel):
             weight_decay=self.hparams.cfg.TRAIN.OPTIM.params.weight_decay
         )
 
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=self.hparams.cfg.TRAIN.END_EPOCH,
-            eta_min=1e-6
-        )
-
-        return [optimizer], [scheduler]
+        # Use MultiStepLR with per-step interval for mask/res transformer (matching original MoMask)
+        if self.stage in ("mask_transformer", "res_transformer"):
+            scheduler_cfg = self.hparams.cfg.TRAIN.LR_SCHEDULER
+            scheduler = torch.optim.lr_scheduler.MultiStepLR(
+                optimizer,
+                milestones=list(scheduler_cfg.params.milestones),
+                gamma=scheduler_cfg.params.gamma
+            )
+            # Step every iteration, not every epoch
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "interval": "step",  # per iteration
+                },
+            }
+        else:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=self.hparams.cfg.TRAIN.END_EPOCH,
+                eta_min=1e-6
+            )
+            return [optimizer], [scheduler]

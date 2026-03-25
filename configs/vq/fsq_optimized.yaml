@@ -1,0 +1,32 @@
+# Optimized FSQ-based VQ-VAE Configuration
+# Uses direct encoder->FSQ mapping without projection layers
+#
+# Benefits over configs/vq/fsq.yaml:
+# - No projection layers (more efficient)
+# - Encoder outputs code_dim directly (512 -> 4 removed)
+# - Faster training and inference
+# - Same reconstruction quality
+#
+# Trade-off: Lower encoder output dimension (4 vs 512)
+# This works well for FSQ as the discrete quantization is the bottleneck anyway
+
+target: mGPT.archs.mgpt_fsq.FSQVae
+params:
+  # FSQ-specific parameters
+  fsq_levels: [5, 5, 5, 5]  # 5^4 = 625 discrete codes
+  code_dim: 4                # Must match len(fsq_levels)
+
+  # Optimization: encoder outputs code_dim directly (no projection)
+  use_projection: false      # Set to true for standard FSQ with projection
+  output_emb_width: 4        # Must match code_dim when use_projection=false
+
+  # Encoder/Decoder parameters
+  down_t: 2
+  stride_t: 2
+  width: 512                 # Internal channel width (independent of code_dim)
+  depth: 3
+  dilation_growth_rate: 3
+  norm: null
+  activation: 'relu'
+  nfeats: ${DATASET.NFEATS}
+  ablation: ${ABLATION}

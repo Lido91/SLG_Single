@@ -141,7 +141,7 @@ class Q1DecoderBlock(nn.Module):
         """
         Args:
             x: (B, T, embed_dim) - Q1 token embeddings
-            text_context: (B, S_text, text_dim) - Text features
+            text_context: (B, S_text, text_dim) - Text/speech features, or None to skip
             q0_context: (B, T_q0, embed_dim) - Q0 token embeddings
             text_mask: (B, S_text) - Optional text mask
 
@@ -151,8 +151,9 @@ class Q1DecoderBlock(nn.Module):
         # Self-attention
         x = x + self.self_attn(self.ln1(x))
 
-        # Cross-attention to text
-        x = x + self.text_cross_attn(self.ln2(x), text_context, context_mask=text_mask)
+        # Cross-attention to text/speech (skip if None)
+        if text_context is not None:
+            x = x + self.text_cross_attn(self.ln2(x), text_context, context_mask=text_mask)
 
         # Cross-attention to Q0 (KEY: hierarchical dependency)
         x = x + self.q0_cross_attn(self.ln3(x), q0_context)
@@ -221,7 +222,7 @@ class Q2DecoderBlock(nn.Module):
         """
         Args:
             x: (B, T, embed_dim) - Q2 token embeddings
-            text_context: (B, S_text, text_dim) - Text features
+            text_context: (B, S_text, text_dim) - Text/speech features, or None to skip
             prev_quantizers_context: (B, T_prev, embed_dim) - Concatenated Q0+Q1 embeddings
             text_mask: (B, S_text) - Optional text mask
 
@@ -231,8 +232,9 @@ class Q2DecoderBlock(nn.Module):
         # Self-attention
         x = x + self.self_attn(self.ln1(x))
 
-        # Cross-attention to text
-        x = x + self.text_cross_attn(self.ln2(x), text_context, context_mask=text_mask)
+        # Cross-attention to text/speech (skip if None)
+        if text_context is not None:
+            x = x + self.text_cross_attn(self.ln2(x), text_context, context_mask=text_mask)
 
         # Cross-attention to Q0+Q1 (KEY: hierarchical dependency)
         x = x + self.prev_quantizers_cross_attn(self.ln3(x), prev_quantizers_context)

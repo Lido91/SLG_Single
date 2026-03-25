@@ -17,7 +17,7 @@ params:
   clip_model: 'ViT-B/32'          # CLIP model for text encoding
 
   # Training Parameters
-  pkeep: 1.0                      # Probability of keeping GT tokens for conditioning
+  pkeep: 0.5                      # Probability of keeping GT tokens for conditioning
                                   # 1.0 = full teacher forcing
                                   # 0.5 = scheduled sampling (50% GT, 50% predicted)
                                   # 0.0 = no teacher forcing

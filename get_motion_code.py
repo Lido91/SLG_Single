@@ -20,24 +20,17 @@ def get_rvqvae_embeddings(vae, code_idx):
         code_idx: Token indices [B, T', num_quantizers]
 
     Returns:
-        embeddings: [B, T', code_dim]
+        embeddings: numpy array [B, T', code_dim]
     """
     B, T_prime, num_quantizers = code_idx.shape
 
-    # Accumulate embeddings from all quantization stages
     embeddings = None
     for i in range(num_quantizers):
-        indices = code_idx[:, :, i]  # [B, T']
-        indices_flat = indices.reshape(-1)  # [B*T']
-
-        # Get codebook embedding for this stage
+        indices = code_idx[:, :, i].reshape(-1)  # [B*T']
         quantizer = vae.quantizer._get_quantizer(i)
-        z_q = quantizer.dequantize(indices_flat)  # [B*T', code_dim]
-
-        # Reshape to [B, T', code_dim]
+        z_q = quantizer.dequantize(indices)  # [B*T', code_dim]
         z_q = z_q.view(B, T_prime, vae.code_dim)
 
-        # Sum residual embeddings
         if embeddings is None:
             embeddings = z_q
         else:
@@ -46,28 +39,52 @@ def get_rvqvae_embeddings(vae, code_idx):
     return embeddings.detach().cpu().numpy()
 
 
+def get_single_vq_embeddings(vae, code_idx):
+    """
+    Get embeddings from single-stage VQ token indices.
+
+    Args:
+        vae: VQVae model
+        code_idx: Token indices [B, T']
+
+    Returns:
+        embeddings: numpy array [B, T', code_dim]
+    """
+    return vae.quantizer.dequantize(code_idx).detach().cpu().numpy()
+
+
+def encode_and_extract(vae, pose, is_rvqvae):
+    """
+    Encode pose and extract both token IDs and embeddings.
+
+    Returns:
+        tokens: numpy array, embeddings: numpy array
+    """
+    tokens, _ = vae.encode(pose)
+    if is_rvqvae:
+        embeddings = get_rvqvae_embeddings(vae, tokens)
+    else:
+        embeddings = get_single_vq_embeddings(vae, tokens)
+    return tokens.cpu().numpy(), embeddings
+
+
 def main():
-    # parse options
-    cfg = parse_args(phase="test")  # parse config file
+    cfg = parse_args(phase="test")
     cfg.TRAIN.STAGE = "token"
     cfg.TRAIN.BATCH_SIZE = 1
 
-    # set seed
     pl.seed_everything(cfg.SEED_VALUE)
 
-    # gpu setting
     if cfg.ACCELERATOR == "gpu":
         os.environ["PYTHONWARNINGS"] = "ignore"
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-    # create dataset
+    # Create dataset
     datasets = build_data(cfg, phase='token')
     print("datasets module initialized")
 
     # Determine output paths
     tokens_code_path = cfg.DATASET.CODE_PATH
-
-    # Create embeddings path (parallel structure)
     if 'TOKENS' in tokens_code_path.upper():
         embeddings_code_path = tokens_code_path.replace('TOKENS', 'EMBEDDINGS').replace('tokens', 'embeddings')
     else:
@@ -78,47 +95,41 @@ def main():
     print(f"  Tokens:     {os.path.join(datasets.hparams.data_root, tokens_code_path)}")
     print(f"  Embeddings: {os.path.join(datasets.hparams.data_root, embeddings_code_path)}\n")
 
-    # create model
+    # Create model and load pretrained VAE
     model = build_model(cfg, datasets)
     if hasattr(model, "motion_vae"):
         model.vae = model.motion_vae
     print("model loaded")
 
-    # Strict load vae model
     assert cfg.TRAIN.PRETRAINED_VAE is not None
     load_pretrained_vae(cfg, model)
 
     if cfg.ACCELERATOR == "gpu":
         model = model.to('cuda')
 
-    # Set model to eval mode to disable dropout
     model.eval()
     torch.set_grad_enabled(False)
-    print("Model set to eval mode (dropout disabled)")
+    print("Model set to eval mode")
 
-    first_save = True  # Flag for sanity check on first file
+    # Detect VAE mode
+    has_3part = hasattr(model, 'hand_vae') and hasattr(model, 'rhand_vae')
+    if has_3part:
+        print("[3-part VAE mode: body + lhand + rhand]")
+    else:
+        print("[Single VAE mode]")
 
-    for batch in tqdm(datasets.train_dataloader(),
-                      desc=f'motion tokenize'):
-        # Handle different batch formats:
-        # - Original pipeline: batch['name'] is a string
-        # - H2S token dataset: batch['name'] may be bool, use batch['text'] instead
+    first_save = True
+
+    for batch in tqdm(datasets.train_dataloader(), desc='motion tokenize'):
         names = batch['name']
         if isinstance(names[0], bool):
-            # H2S Text2MotionDatasetToken: name is in 'text' field due to collate mapping
             names = batch['text']
 
-        # Get source dataset (for subdirectory organization)
         src = batch.get('src', ['default'])[0]
-
-        pose = batch['motion']
-        pose = pose.cuda().float()
+        pose = batch['motion'].cuda().float()
 
         if pose.shape[1] == 0:
             continue
-
-        # Encode motion to tokens
-        target, _ = model.vae.encode(pose)
 
         # Prepare output paths
         output_dir = os.path.join(datasets.hparams.data_root, tokens_code_path, src)
@@ -129,45 +140,73 @@ def main():
         embeddings_path = os.path.join(embeddings_output_dir, names[0] + '.npy')
         Path(embeddings_path).parent.mkdir(parents=True, exist_ok=True)
 
-        # Check if R-VQVAE (3D output) or single-stage VQ (2D output)
-        is_rvqvae = target.dim() == 3  # [B, T', num_quantizers]
+        if has_3part:
+            # 3-part mode: split pose into body/lhand/rhand
+            pose_lhand = pose[..., 30:75]
+            pose_rhand = pose[..., 75:120]
+            pose_body = torch.cat([pose[..., :30], pose[..., 120:]], dim=-1)
 
-        if is_rvqvae:
-            # R-VQVAE mode: [B, T', num_quantizers]
-            num_quantizers = target.shape[-1]
+            # Encode each part
+            tokens_body, _ = model.vae.encode(pose_body)
+            tokens_lhand, _ = model.hand_vae.encode(pose_lhand)
+            tokens_rhand, _ = model.rhand_vae.encode(pose_rhand)
 
-            # Full version: all quantizers
-            target_full = target.cpu().numpy()
+            is_rvqvae = tokens_body.dim() == 3  # [B, T', num_quantizers]
 
-            # Get embeddings by summing all quantizer stage embeddings
-            embeddings = get_rvqvae_embeddings(model.vae, target)
+            if is_rvqvae:
+                # R-VQVAE: stack [B, T', num_quantizers, 3]
+                target = np.stack([
+                    tokens_body.cpu().numpy(),
+                    tokens_lhand.cpu().numpy(),
+                    tokens_rhand.cpu().numpy()
+                ], axis=-1)
 
-            if first_save:
-                print(f"\n[R-VQVAE mode, {num_quantizers} quantizers]")
-                print(f"  Full codes shape: {target_full.shape}")
-                print(f"  Embeddings shape: {embeddings.shape}")
+                # Also save Q0-only: [B, T', 3]
+                target_q0 = np.stack([
+                    tokens_body[:, :, 0].cpu().numpy(),
+                    tokens_lhand[:, :, 0].cpu().numpy(),
+                    tokens_rhand[:, :, 0].cpu().numpy()
+                ], axis=-1)
 
-            # Save full version
-            if target_full.dtype not in [np.int32, np.int64]:
-                target_full = target_full.astype(np.int64)
-            np.save(target_path, target_full)
+                # Get embeddings: sum all quantizer stages
+                emb_body = get_rvqvae_embeddings(model.vae, tokens_body)
+                emb_lhand = get_rvqvae_embeddings(model.hand_vae, tokens_lhand)
+                emb_rhand = get_rvqvae_embeddings(model.rhand_vae, tokens_rhand)
+
+                # Save Q0-only version
+                target_path_q0 = target_path.replace('.npy', '_q0.npy')
+                np.save(target_path_q0, target_q0.astype(np.int64))
+            else:
+                # Single-stage: [B, T', 3]
+                target = np.stack([
+                    tokens_body.cpu().numpy(),
+                    tokens_lhand.cpu().numpy(),
+                    tokens_rhand.cpu().numpy()
+                ], axis=-1)
+
+                emb_body = get_single_vq_embeddings(model.vae, tokens_body)
+                emb_lhand = get_single_vq_embeddings(model.hand_vae, tokens_lhand)
+                emb_rhand = get_single_vq_embeddings(model.rhand_vae, tokens_rhand)
+
+            # Stack embeddings: [B, T', 3, code_dim]
+            embeddings = np.stack([emb_body, emb_lhand, emb_rhand], axis=-2)
 
         else:
-            # Single-stage VQVAE mode: [B, T']
-            target_np = target.cpu().numpy()
+            # Single VAE mode
+            tokens, _ = model.vae.encode(pose)
+            is_rvqvae = tokens.dim() == 3
 
-            # Get embeddings by dequantizing token IDs
-            embeddings = model.vae.quantizer.dequantize(target).cpu().numpy()
+            if is_rvqvae:
+                target = tokens.cpu().numpy()
+                embeddings = get_rvqvae_embeddings(model.vae, tokens)
+            else:
+                target = tokens.cpu().numpy()
+                embeddings = get_single_vq_embeddings(model.vae, tokens)
 
-            if first_save:
-                print(f"\n[Single-stage VQ mode]")
-                print(f"  Tokens shape:     {target_np.shape}")
-                print(f"  Embeddings shape: {embeddings.shape}")
-
-            # Save tokens
-            if target_np.dtype not in [np.int32, np.int64]:
-                target_np = target_np.astype(np.int64)
-            np.save(target_path, target_np)
+        # Save tokens
+        if target.dtype not in [np.int32, np.int64]:
+            target = target.astype(np.int64)
+        np.save(target_path, target)
 
         # Save embeddings
         if embeddings.dtype not in [np.float32, np.float16]:
@@ -181,29 +220,23 @@ def main():
             print("="*80)
 
             loaded_tokens = np.load(target_path)
-            print(f"✓ Token file saved and reloaded successfully")
-            print(f"  File: {os.path.basename(target_path)}")
-            print(f"  Shape: {loaded_tokens.shape}")
-            print(f"  Dtype: {loaded_tokens.dtype}")
-            print(f"  Min value: {loaded_tokens.min()}")
-            print(f"  Max value: {loaded_tokens.max()}")
-            print(f"  Sample values: {loaded_tokens.flatten()[:10]}")
+            print(f"  Token file:  {os.path.basename(target_path)}")
+            print(f"  Shape: {loaded_tokens.shape}, Dtype: {loaded_tokens.dtype}")
+            print(f"  Min: {loaded_tokens.min()}, Max: {loaded_tokens.max()}")
+            print(f"  Sample: {loaded_tokens.flatten()[:10]}")
 
             loaded_embeddings = np.load(embeddings_path)
-            print(f"\n✓ Embeddings file saved and reloaded successfully")
-            print(f"  File: {os.path.basename(embeddings_path)}")
-            print(f"  Shape: {loaded_embeddings.shape}")
-            print(f"  Dtype: {loaded_embeddings.dtype}")
-            print(f"  Min/Max: {loaded_embeddings.min():.4f} / {loaded_embeddings.max():.4f}")
+            print(f"\n  Embeddings:  {os.path.basename(embeddings_path)}")
+            print(f"  Shape: {loaded_embeddings.shape}, Dtype: {loaded_embeddings.dtype}")
+            print(f"  Min: {loaded_embeddings.min():.4f}, Max: {loaded_embeddings.max():.4f}")
 
             print("="*80 + "\n")
             first_save = False
 
     print('\n' + '='*80)
     print('Motion tokenization COMPLETED!')
-    print('='*80)
-    print(f'Token IDs saved to: {os.path.join(datasets.hparams.data_root, tokens_code_path)}')
-    print(f'Embeddings saved to: {os.path.join(datasets.hparams.data_root, embeddings_code_path)}')
+    print(f'Token IDs:  {os.path.join(datasets.hparams.data_root, tokens_code_path)}')
+    print(f'Embeddings: {os.path.join(datasets.hparams.data_root, embeddings_code_path)}')
     print('='*80)
 
 

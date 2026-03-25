@@ -1,53 +1,25 @@
 <div align= "center">
-    <h1> Official repo for MotionGPT <img src="./assets/images/avatar_bot.jpg" width="35px"></h1>
+    <h1> Sign Language Generation (SLG) </h1>
 
 </div>
 
 <div align="center">
-    <h2> <a href="https://motion-gpt.github.io/">MotionGPT: Human Motion as a Foreign Language</a></h2>
+    <h2> Text-to-Sign Language Generation with Hierarchical RVQ-GPT</h2>
 
 <p align="center">
-  <a href="https://motion-gpt.github.io/">Project Page</a> •
-  <a href="https://arxiv.org/abs/2306.14795">Arxiv Paper</a> •
-  <a href="https://huggingface.co/spaces/OpenMotionLab/MotionGPT">HuggingFace Demo</a> •
-  <a href="#️-faq">FAQ</a> •
-  <a href="#-citation">Citation
+  Adapted from <a href="https://motion-gpt.github.io/">MotionGPT</a> for Sign Language Generation
 </p>
 
 </div>
 
-<div align="center">
+## 🏃 Introduction
 
-<!-- <img src="https://cdn.discordapp.com/attachments/941582479117127680/1111543600879259749/20230526075532.png" width="350px"> -->
+This repository is adapted from [MotionGPT](https://github.com/OpenMotionLab/MotionGPT) for **Sign Language Generation (SLG)** tasks. We extend the motion-language framework to generate sign language motions from text using the [How2Sign](https://how2sign.github.io/) dataset.
 
-|                                                   Teaser Video                                                   |                                                    Demo Video                                                    |
-| :--------------------------------------------------------------------------------------------------------------: | :--------------------------------------------------------------------------------------------------------------: |
-| <video src="https://github.com/OpenMotionLab/MotionGPT/assets/120085716/a741e162-b2f4-4f65-af8e-aa19c4115a9e" /> | <video src="https://github.com/OpenMotionLab/MotionGPT/assets/120085716/ae966d17-6326-43e6-8d5b-8562cf3ffd52" /> |
-
-</div>
-
-<!-- ### [MotionGPT: Human Motion as a Foreign Language](https://motion-gpt.github.io/) -->
-<!-- ### [Project Page](https://motion-gpt.github.io/) | [Arxiv Paper](https://arxiv.org/abs/2306.14795) | [HuggingFace Demo](xxx) -->
-
-## 🏃 Intro MotionGPT
-
-MotionGPT is a **unified** and **user-friendly** motion-language model to learn the semantic coupling of two modalities and generate high-quality motions and text descriptions on **multiple motion tasks**.
-
-<details>
-    <summary><b>Technical details</b></summary>
-
-Though the advancement of pre-trained large language models unfolds, the exploration of building a unified model for language and other multi-modal data, such as motion, remains challenging and untouched so far. Fortunately, human motion displays a semantic coupling akin to human language, often perceived as a form of body language. By fusing language data with large-scale motion models, motion-language pre-training that can enhance the performance of motion-related tasks becomes feasible. Driven by this insight, we propose MotionGPT, a unified, versatile, and user-friendly motion-language model to handle multiple motion-relevant tasks. Specifically, we employ the discrete vector quantization for human motion and transfer 3D motion into motion tokens, similar to the generation process of word tokens. Building upon this “motion vocabulary”, we perform language modeling on both motion and text in a unified manner, treating human motion as a specific language. Moreover, inspired by prompt learning, we pre-train MotionGPT with a mixture of motion-language data and fine-tune it on prompt-based question-and-answer tasks. Extensive experiments demonstrate that MotionGPT achieves state-of-the-art performances on multiple motion tasks including text-driven motion generation, motion captioning, motion prediction, and motion in-between.
-
-<img width="1194" alt="pipeline" src="./assets/images/pipeline.png">
-</details>
-
-## 🚩 News
-
-- [2025/06/30] Release 🔥<a href="https://motiongpt3.github.io/"> MotionGPT3 </a>🔥 **A bimodal motion-language framework using MoT architecture.**
-- [2023/09/22] MotionGPT got accepted by NeurIPS 2023
-- [2023/09/11] Release the <a href="https://huggingface.co/spaces/OpenMotionLab/MotionGPT">huggingface demo</a>  🔥🔥🔥
-- [2023/09/09] Release the training of MotionGPT V1.0 🔥🔥🔥
-- [2023/06/20] Upload paper and init project
+Key features:
+- **Hierarchical RVQ-GPT**: Progressive refinement with 6 quantizers for high-quality sign language generation
+- **Full-body pose representation**: 133 features including body, hands, and face
+- **Text-to-Sign**: Generate sign language motions from natural language text
 
 ## ⚡ Quick Start
 
@@ -141,63 +113,63 @@ The outputs:
 <details>
   <summary><b>Training guidance</b></summary>
 
-### 1. Prepare the datasets
+### 1. Prepare the How2Sign dataset
 
-1. Please refer to [HumanML3D](https://github.com/EricGuo5513/HumanML3D) for text-to-motion dataset setup.
+For sign language generation tasks, we use the How2Sign dataset with full-body pose representation (133 features).
 
-2. Put the instructions data in `prepare/instructions` to the same folder of HumanML3D dataset.
+1. Download the [How2Sign dataset](https://how2sign.github.io/) and extract poses.
 
-### 2.1. Ready to train motion tokenizer model
-
-Please first check the parameters in `configs/config_h3d_stage1.yaml`, e.g. `NAME`,`DEBUG`.
-
-Then, run the following command:
-
+2. Organize the data structure:
 ```
-python -m train --cfg configs/config_h3d_stage1.yaml --nodebug
+/path/to/How2Sign/
+├── poses/          # Pose files (.npy)
+├── re_aligned/     # Text annotations
+└── splits/         # Train/val/test splits
 ```
 
-### 2.2. Ready to pretrain MotionGPT model
-
-Please update the parameters in `configs/config_h3d_stage2.yaml`, e.g. `NAME`,`DEBUG`,`PRETRAINED_VAE` (change to your `latest ckpt model path` in previous step)
-
-Then, run the following command to store all motion tokens of training set for convenience
-
-```
-python -m scripts.get_motion_code --cfg configs/config_h3d_stage2.yaml
-```
-
-After that, run the following command:
-
-```
-python -m train --cfg configs/config_h3d_stage2.yaml --nodebug
+3. Update the data paths in your config file (e.g., `configs/deto_h2s_rvq_hierarchical_6layer.yaml`):
+```yaml
+DATASET:
+  H2S:
+    ROOT: /path/to/How2Sign
+    MEAN_PATH: /path/to/mean.pt
+    STD_PATH: /path/to/std.pt
 ```
 
-### 2.3. Ready to instruct-tuning MotionGPT model
-
-Please update the parameters in `configs/config_h3d_stage3.yaml`, e.g. `NAME`,`DEBUG`,`PRETRAINED` (change to your `latest ckpt model path` in previous step)
-
-Then, run the following command:
+### 2. Train RVQ-VAE tokenizer
 
 ```
-python -m train --cfg configs/config_h3d_stage3.yaml --nodebug
+python -m train --cfg configs/deto_h2s_rvq.yaml --nodebug
 ```
 
-### 3. Evaluate the model
+### 3. Generate motion tokens
 
-Please first put the tained model checkpoint path to `TEST.CHECKPOINT` in `configs/config_h3d_stage3.yaml`.
-
-Then, run the following command:
+After training the RVQ-VAE, generate motion tokens for the LM stage:
 
 ```
-python -m test --cfg configs/config_h3d_stage3.yaml --task t2m
+python -m scripts.get_motion_code --cfg configs/deto_h2s_rvq_hierarchical_6layer.yaml
 ```
 
-Some parameters:
+### 4. Train Hierarchical RVQ-GPT
 
-- `--task`: evaluation tasks including t2m(Text-to-Motion), m2t(Motion translation), pred(Motion prediction), inbetween(Motion inbetween)
+The 6-layer Hierarchical RVQ-GPT uses progressive refinement with 6 quantizers:
+- Q0 decoder: Coarse codes (text-only conditioning)
+- Q1-Q5 decoders: Progressive refinement (conditioned on previous quantizers + text)
 
-Due to the python package conflit, the released implement of linguistic metrics in motion translation task is by [nlg-metricverse](https://github.com/disi-unibo-nlp/nlg-metricverse), which may not be consistent to the results implemented by [nlg-eval](https://github.com/Maluuba/nlg-eval). We will fix this in the future.
+```
+python -m train --cfg configs/deto_h2s_rvq_hierarchical_6layer.yaml --nodebug
+```
+
+### 5. Evaluate on How2Sign
+
+```
+python -m test --cfg configs/deto_h2s_rvq_hierarchical_6layer.yaml --task t2m
+```
+
+**Available How2Sign configs:**
+- `configs/deto_h2s_rvq.yaml` - RVQ-VAE tokenizer training
+- `configs/deto_h2s_rvq_hierarchical_6layer.yaml` - 6-layer Hierarchical RVQ-GPT
+- `configs/deto_h2s_rvq_hierarchical.yaml` - 3-layer Hierarchical RVQ-GPT
 
 </details>
 
@@ -474,7 +446,7 @@ If you find our code or paper helps, please consider citing:
 
 ## Acknowledgments
 
-Thanks to [Motion-latent-diffusion](https://github.com/ChenFengYe/motion-latent-diffusion), [T2m-gpt](https://github.com/Mael-zys/T2M-GPT), [TEMOS](https://github.com/Mathux/TEMOS), [ACTOR](https://github.com/Mathux/ACTOR), [HumanML3D](https://github.com/EricGuo5513/HumanML3D) and [joints2smpl](https://github.com/wangsen1312/joints2smpl), our code is partially borrowing from them.
+Thanks to [Motion-latent-diffusion](https://github.com/ChenFengYe/motion-latent-diffusion), [T2m-gpt](https://github.com/Mael-zys/T2M-GPT), [TEMOS](https://github.com/Mathux/TEMOS), [ACTOR](https://github.com/Mathux/ACTOR), [joints2smpl](https://github.com/wangsen1312/joints2smpl), and [How2Sign](https://how2sign.github.io/), our code is partially borrowing from them.
 
 ## License
 

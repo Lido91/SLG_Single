@@ -93,18 +93,23 @@ class ResidualVQ(nn.Module):
         else:
             return self.quantizers[index]
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, List[torch.Tensor], torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, return_per_quantizer: bool = False):
         """
         Forward pass with residual quantization
 
         Args:
             x: Input tensor [B, C, T]
+            return_per_quantizer: If True, also return per-quantizer embeddings
+                and pre-quantization residuals (for VQ-Style losses)
 
         Returns:
             quantized_out: Accumulated quantized output [B, C, T]
             all_indices: List of code indices per stage, each [B*T]
             commit_loss: Mean commitment loss across stages
             perplexity: Mean perplexity across stages
+            (if return_per_quantizer=True, additionally:)
+            all_z_q: List of per-quantizer quantized embeddings [B, C, T]
+            all_residuals: List of pre-quantization residuals [B, C, T]
         """
         B, C, T = x.shape
 
@@ -128,12 +133,25 @@ class ResidualVQ(nn.Module):
         all_losses = []
         all_perplexities = []
 
+        # Per-quantizer outputs for VQ-Style losses
+        if return_per_quantizer:
+            all_z_q = []
+            all_residuals = []
+
         # Residual quantization loop
         for i in range(num_quantizers_to_use):
             quantizer = self._get_quantizer(i)
 
+            # Save pre-quantization residual before this quantizer
+            if return_per_quantizer:
+                all_residuals.append(residual.clone())
+
             # Quantize current residual
             z_q, loss, perplexity = quantizer(residual)
+
+            # Save per-quantizer quantized embedding (with straight-through grad)
+            if return_per_quantizer:
+                all_z_q.append(z_q)
 
             # Store indices for this stage
             # Need to extract indices from quantizer
@@ -154,6 +172,9 @@ class ResidualVQ(nn.Module):
         # Aggregate losses and perplexities
         commit_loss = torch.mean(torch.stack(all_losses))
         mean_perplexity = torch.mean(torch.stack(all_perplexities))
+
+        if return_per_quantizer:
+            return quantized_out, all_indices, commit_loss, mean_perplexity, all_z_q, all_residuals
 
         return quantized_out, all_indices, commit_loss, mean_perplexity
 

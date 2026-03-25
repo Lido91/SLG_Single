@@ -1,0 +1,139 @@
+NAME: DETO_RVQ_Hierarchical_3layer_how2sign_whisper # Speech-driven Hierarchical RVQ-GPT for How2Sign
+ACCELERATOR: "gpu"
+NUM_NODES: 1
+DEVICE: [0,1]
+
+TRAIN:
+  STAGE: lm_pretrain  # Hierarchical RVQ-GPT stage (logs per-decoder losses & accuracies)
+  NUM_WORKERS: 16
+  BATCH_SIZE: 12  # Reduced due to audio memory requirements (HuBERT features)
+  END_EPOCH: 150
+  RESUME: ""
+  PRETRAINED:
+  PRETRAINED_VAE: experiments/mgpt/DETO_RVQ_wholebody_3_2026-02-01-17-21-28/checkpoints/min-how2sign_MPJPE_PA_handepoch=489.ckpt
+
+  OPTIM:
+    target: AdamW
+    params:
+      lr: 1e-4
+      betas: [0.9, 0.99]
+      weight_decay: 0.01
+
+  LR_SCHEDULER:
+    target: CosineAnnealingLR
+    params:
+      T_max: ${TRAIN.END_EPOCH}
+      eta_min: 1e-6
+
+EVAL:
+  BATCH_SIZE: 12
+  SPLIT: val
+
+TEST:
+  CHECKPOINTS: "experiments/mgpt/DETO_RVQ_Hierarchical_3layer_youtube_whisper/checkpoints/min-youtube3d_DTW_MPJPE_PA_lhandepoch=79.ckpt"  # Will be set after training
+  SPLIT: test
+  BATCH_SIZE: 12
+  REPLICATION_TIMES: 1
+  SAVE_PREDICTIONS: true
+  MAX_SAMPLES: 500
+
+DATASET:
+  target: mGPT.data.H2S.H2SDataModule
+  CODE_PATH: "TOKENS_h2s_rvq_whole_3"  # 3-quantizer tokens for How2Sign
+  TASK_PATH: prepare/instructions/template_pretrain.json
+
+  WORD_VERTILIZER_PATH: prepare/deps/glove
+  H2S:
+    DATASET_NAME: how2sign
+    ROOT: /data/hwu/slg_data/How2Sign
+    YOUTUBE3D_ROOT: /data/hwu/slg_data/Youtube3D
+    CSL_ROOT: /data/hwu/slg_data/CSL-Daily
+    PHOENIX_ROOT: /data/hwu/slg_data/Phoenix_2014T
+    MEAN_PATH: /data/hwu/slg_data/CSL-Daily/mean.pt
+    STD_PATH: /data/hwu/slg_data/CSL-Daily/std.pt
+    MAX_MOTION_LEN: 400
+    MIN_MOTION_LEN: 40
+    MAX_TEXT_LEN: 40
+    PICK_ONE_TEXT: true
+    FRAME_RATE: 20.0
+    UNIT_LEN: 4
+    STD_TEXT: False
+    GLOSS: ""
+    BALANCED: False
+
+    # Audio configuration for speech-driven generation
+    # Audio path: {AUDIO_DIR}/speech/{split}_wavs/{SENTENCE_NAME}.wav
+    AUDIO_DIR: /data/hwu/slg_data/How2Sign
+    USE_SPEECH: True
+    PRELOAD_AUDIO: False
+
+METRIC:
+  TYPE: ["TM2TMetrics"]
+
+LOSS:
+  LAMBDA_CLS: 1.0
+
+# Model configuration
+model:
+  target: mGPT.models.mgpt.MotionGPT
+  params:
+    condition: "audio"
+    task: "a2m"
+    lm: ${lm.rvq_hierarchical_speech}
+    motion_vae: ${vq.h2s_rvq_3}
+    hand_vae_cfg: null
+    rhand_vae_cfg: null
+    codebook_size: 512
+
+# LM reference
+lm:
+  rvq_hierarchical_speech:
+    target: mGPT.archs.mgpt_rvq_hierarchical.HierarchicalRVQGPT
+    params:
+      num_vq: 2048
+      embed_dim: 1024
+      block_size: 100
+      num_layers: 9
+      n_head: 16
+      dropout: 0.1
+      text_encoder_type: null
+      speech_encoder_type: whisper-medium
+      use_speech: True
+      pkeep: 0.5
+
+# VQ reference
+vq:
+  h2s_rvq_3:
+    target: mGPT.archs.mgpt_rvq.RVQVae
+    params:
+      num_quantizers: 3
+      quantizer: 'ema_reset'
+      quantize_dropout_prob: 0.2
+      quantize_dropout_cutoff_index: 0
+      shared_codebook: false
+      code_num: 512
+      code_dim: 512
+      output_emb_width: 512
+      down_t: 2
+      stride_t: 2
+      width: 512
+      depth: 3
+      dilation_growth_rate: 3
+      norm: None
+      activation: 'relu'
+      nfeats: 133
+
+LOGGER:
+  TYPE: ["wandb"]
+  VAL_EVERY_STEPS: 10
+  WANDB:
+    params:
+      project: SLG
+      name: ${NAME}
+      tags: ['hierarchical', 'rvq', 'speech2motion', 'how2sign', 'hubert']
+      notes: |
+        Speech-Driven Hierarchical RVQ-GPT with HuBERT Large on How2Sign
+        - Speech Encoder: HuBERT Large (1024D, frozen)
+        - Dataset: How2Sign
+        - Audio: /data/hwu/slg_data/How2Sign/speech/{split}_wavs/
+        - Q0→Q1→Q2 hierarchical generation with speech cross-attention

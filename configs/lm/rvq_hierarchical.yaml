@@ -1,20 +1,52 @@
 target: mGPT.archs.mgpt_rvq_hierarchical.HierarchicalRVQGPT
 params:
   # Codebook Parameters
-  num_vq: 512                     # Codebook size per quantizer (must match RVQ-VAE)
+  num_vq: 2048                    # Codebook size per quantizer (must match RVQ-VAE)
 
   # Architecture Parameters
   embed_dim: 1024                 # Token embedding dimension
   block_size: 100                 # Maximum sequence length (400 frames / 4 = 100)
-  num_layers: 9                   # Number of transformer layers per decoder
   n_head: 16                      # Number of attention heads
   dropout: 0.1                    # Dropout probability
 
-  # Text Encoder Parameters
-  text_dim: 512                   # Text feature dimension (512 for CLIP, 1024 for T5)
+  # === Q0 Decoder ===
+  # 'llamagen': prefix-concat, RMSNorm, GQA+RoPE, SwiGLU, KV cache (faster inference)
+  # 'transformer': cross-attention, LayerNorm, MHA, GELU (same style as Q1/Q2)
+  q0_decoder_type: transformer
+  num_layers_q0: 9               # Q0 layers (coarse - most important)
 
-  # NOTE: This architecture uses the first 3 quantizers (Q0, Q1, Q2) from a 6-quantizer RVQ-VAE
-  # - Q0: Coarse motion codes (independent, text-only conditioning)
-  # - Q1: Medium refinement (conditioned on Q0 + text)
-  # - Q2: Fine refinement (conditioned on Q0 + Q1 + text)
-  # Quantizers Q3-Q5 are ignored during training and generation
+  # === Q1 Decoder (cross-attention, conditioned on Q0) ===
+  num_layers_q1: 6                # Q1 layers (medium refinement)
+  q1_use_cond: True              # Whether Q1 cross-attends to speech/text (True/False)
+
+  # === Q2 Decode (cross-attention, conditioned on Q0+Q1) ===
+  num_layers_q2: 6                # Q2 layers (fine details)
+  q2_use_cond: True              # Whether Q2 cross-attends to speech/text (True/False)
+
+  # Default layer count (used if num_layers_qX not specified)
+  num_layers: 6
+
+  # Teacher forcing & corruption
+  pkeep: 0.5                      # 1.0 = full GT, 0.5 = 50% scheduled sampling
+  corrupt_ratio: 0.5              # Per-time RVQ corruption (T2M-HiFiGPT Sec 3.4): fraction of timesteps replaced with random codes (0.0 = disabled)
+
+  # === Conditioning ===
+  # Text mode: set text_encoder_type, use_speech=False
+  # Speech mode: set speech_encoder_type, use_speech=True, text_encoder_type=null
+  text_encoder_type: null
+  speech_encoder_type: hubert-large
+  use_speech: True
+
+  # === Contrastive Projection (optional, for speech mode) ===
+  # Set contrastive_speech_ckpt to null to disable (use simple linear projection)
+  contrastive_speech_ckpt: "experiments/contrastive_codex/new_contrastive_codex_h2s/checkpoints/speech_head_best.pt"
+  contrastive_proj_dim: 1024
+  contrastive_num_layers: 4
+  contrastive_nhead: 8
+  contrastive_ff_dim: 4096
+  contrastive_max_seq_len: 2000
+  freeze_contrastive_proj: True
+
+  # === LlamaGen-specific (only used when q0_decoder_type=llamagen) ===
+  # n_kv_head: null               # GQA KV heads (null = n_head = standard MHA)
+  # drop_path_rate: 0.0           # Stochastic depth rate

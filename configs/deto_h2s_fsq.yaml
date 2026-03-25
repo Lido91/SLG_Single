@@ -1,0 +1,110 @@
+NAME: DETO-H2S-FSQ
+ACCELERATOR: "gpu"
+NUM_NODES: 1
+DEVICE: [0]
+
+TRAIN:
+  STAGE: vae
+  NUM_WORKERS: 8
+  BATCH_SIZE: 64
+  END_EPOCH: 100
+  RESUME: ""
+  PRETRAINED: ""
+  PRETRAINED_VAE:
+
+  OPTIM:
+    target: AdamW
+    params:
+      lr: 2e-4
+      betas: [0.9, 0.99]
+      weight_decay: 0.0
+
+  LR_SCHEDULER:
+    target: CosineAnnealingLR
+    params:
+      T_max: ${TRAIN.END_EPOCH}
+      eta_min: 1e-6
+
+EVAL:
+  BATCH_SIZE: 32
+  SPLIT: val
+
+TEST:
+  CHECKPOINTS: "experiments/mgpt/DETO-H2S-FSQ/checkpoints/last.ckpt"
+  SPLIT: test
+  BATCH_SIZE: 16
+  REPLICATION_TIMES: 1
+  SAVE_PREDICTIONS: False
+
+DATASET:
+  target: mGPT.data.H2S.H2SDataModule
+  CODE_PATH: ""
+  TASK_PATH: ""
+  WORD_VERTILIZER_PATH: prepare/deps/glove
+  H2S:
+    DATASET_NAME: how2sign
+    ROOT: /data/hwu/slg_data/How2Sign
+    CSL_ROOT: /data/hwu/slg_data/CSL-Daily
+    PHOENIX_ROOT: /data/hwu/slg_data/Phoenix_2014T
+    MEAN_PATH: /data/hwu/slg_data/CSL-Daily/mean.pt
+    STD_PATH: /data/hwu/slg_data/CSL-Daily/std.pt
+    MAX_MOTION_LEN: 400
+    MIN_MOTION_LEN: 40
+    MAX_TEXT_LEN: 40
+    PICK_ONE_TEXT: true
+    FRAME_RATE: 20.0
+    UNIT_LEN: 4
+    STD_TEXT: False
+
+METRIC:
+  TYPE: ["MRMetrics"]
+
+LOSS:
+  LAMBDA_FEATURE: 1.0
+  LAMBDA_VELOCITY: 0.0
+  LAMBDA_COMMIT: 0.0   # FSQ has no commitment loss
+  LAMBDA_CLS: 1.0
+  ABLATION:
+    RECONS_LOSS: "l1_smooth"
+
+# Model configuration with FSQ
+model:
+  target: mGPT.models.mgpt.MotionGPT
+  params:
+    condition: "text"
+    task: "t2m"
+    lm: ${lm.default}
+    motion_vae: ${vq.fsq}  # Use FSQ instead of standard VQ
+    hand_vae_cfg: null
+    rhand_vae_cfg: null
+
+# VQ configuration
+vq:
+  fsq:
+    target: mGPT.archs.mgpt_fsq.FSQVae
+    params:
+      fsq_levels: [5, 5, 5, 5]  # 625 codes
+      code_dim: 4
+      output_emb_width: 512
+      down_t: 2
+      stride_t: 2
+      width: 512
+      depth: 3
+      dilation_growth_rate: 3
+      norm: null
+      activation: 'relu'
+      nfeats: 133  # SMPLX parameters after preprocessing
+
+LOGGER:
+  TYPE: ["tensorboard", "wandb"]
+  VAL_EVERY_STEPS: 5
+  WANDB:
+    params:
+      project: SLG
+      name: ${NAME}
+      tags: ['fsq', 'vqvae', 'how2sign']
+      notes: |
+        FSQ-based VQ-VAE training on How2Sign
+        - Uses Finite Scalar Quantization (625 codes)
+        - No codebook collapse
+        - Simpler training than standard VQ-VAE

@@ -38,6 +38,11 @@ class MRMetrics(Metric):
                        default=torch.tensor(0),
                        dist_reduce_fx="sum")
 
+        self.add_state("youtube3d_count", default=torch.tensor(0), dist_reduce_fx="sum")
+        self.add_state("youtube3d_count_seq",
+                       default=torch.tensor(0),
+                       dist_reduce_fx="sum")
+
         self.add_state("how2sign_MPVPE_PA_all",
                        default=torch.tensor([0.0]),
                        dist_reduce_fx="sum")
@@ -83,13 +88,61 @@ class MRMetrics(Metric):
         self.add_state("how2sign_MPJPE_hand",
                        default=torch.tensor([0.0]),
                        dist_reduce_fx="sum")
-        
+
+        # youtube3d states
+        self.add_state("youtube3d_MPVPE_PA_all",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        self.add_state("youtube3d_MPVPE_PA_hand",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        self.add_state("youtube3d_MPVPE_PA_lhand",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        self.add_state("youtube3d_MPVPE_PA_rhand",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        self.add_state("youtube3d_MPVPE_PA_face",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+
+        self.add_state("youtube3d_MPVPE_all",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        self.add_state("youtube3d_MPVPE_hand",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        self.add_state("youtube3d_MPVPE_lhand",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        self.add_state("youtube3d_MPVPE_rhand",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        self.add_state("youtube3d_MPVPE_face",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+
+        self.add_state("youtube3d_MPJPE_PA_body",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        self.add_state("youtube3d_MPJPE_PA_hand",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+
+        self.add_state("youtube3d_MPJPE_body",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+        self.add_state("youtube3d_MPJPE_hand",
+                       default=torch.tensor([0.0]),
+                       dist_reduce_fx="sum")
+
         m = ["MPVPE_PA_all", "MPVPE_PA_hand", "MPVPE_PA_lhand", "MPVPE_PA_rhand", "MPVPE_PA_face",
             "MPJPE_PA_body", "MPJPE_PA_hand", "MPJPE_body", "MPJPE_hand",
             "MPVPE_all", "MPVPE_hand", "MPVPE_lhand", "MPVPE_rhand", "MPVPE_face"]
         self.MR_metrics = []
         for m_ in m:
             self.MR_metrics.append(f'how2sign_{m_}')
+            self.MR_metrics.append(f'youtube3d_{m_}')
 
         # All metric
         self.metrics = self.MR_metrics
@@ -103,7 +156,12 @@ class MRMetrics(Metric):
         mr_metrics = {}
 
         for name in self.MR_metrics:
-            mr_metrics[name] = getattr(self, name) / max(getattr(self, 'how2sign_count'), 1e-6)
+            # Use the appropriate count based on dataset prefix
+            if name.startswith('youtube3d_'):
+                count = getattr(self, 'youtube3d_count')
+            else:
+                count = getattr(self, 'how2sign_count')
+            mr_metrics[name] = getattr(self, name) / max(count, 1e-6)
             if 'MPVPE' in name or 'MPJPE' in name:
                 mr_metrics[name] = mr_metrics[name] * factor
 
@@ -141,8 +199,8 @@ class MRMetrics(Metric):
         
         for i in range(len(lengths)):
             cur_len = lengths[i]
-            data_src = 'how2sign'
-            setattr(self, 'how2sign_count', cur_len + getattr(self, 'how2sign_count'))
+            data_src = src[i] if src[i] in ['how2sign', 'youtube3d'] else 'how2sign'
+            setattr(self, f'{data_src}_count', cur_len + getattr(self, f'{data_src}_count'))
             
             mesh_gt = vertices_ref[i, :cur_len, ...]
             mesh_out = vertices_rst[i, :cur_len, ...]

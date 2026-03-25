@@ -1,0 +1,137 @@
+NAME: DETO_RVQ_Hierarchical_3layer_h2s_youtube  # Hierarchical RVQ-GPT for How2Sign
+ACCELERATOR: "gpu"
+NUM_NODES: 1
+DEVICE: [0,1,2]
+
+TRAIN:
+  STAGE: lm_pretrain  # Hierarchical RVQ-GPT stage (logs per-decoder losses & accuracies)
+  NUM_WORKERS: 16
+  BATCH_SIZE: 16  # Reduced due to 3 decoders
+  END_EPOCH: 150
+  RESUME: ""
+  PRETRAINED: 
+  PRETRAINED_VAE: experiments/mgpt/DETO_RVQ_wholebody_3_2026-02-01-17-21-28/checkpoints/min-how2sign_MPJPE_PA_handepoch=489.ckpt  # Pretrained 6-quantizer RVQ-VAE
+
+  OPTIM:
+    target: AdamW
+    params:
+      lr: 1e-4  # Learning rate for hierarchical GPT
+      betas: [0.9, 0.99]
+      weight_decay: 0.01
+
+  LR_SCHEDULER:
+    target: CosineAnnealingLR
+    params:    
+      T_max: ${TRAIN.END_EPOCH}
+      eta_min: 1e-6
+
+EVAL:
+  BATCH_SIZE: 16
+  SPLIT: val
+
+TEST:
+  CHECKPOINTS: experiments/mgpt/DETO_RVQ_Hierarchical_3layer_bert/checkpoints/min-how2sign_DTW_MPJPE_PA_lhandepoch=59.ckpt # Will be set after training
+  SPLIT: test
+  BATCH_SIZE: 16
+  REPLICATION_TIMES: 1
+  SAVE_PREDICTIONS: true
+  MAX_SAMPLES: 500 
+
+DATASET:
+  target: mGPT.data.H2S.H2SDataModule
+  CODE_PATH: "TOKENS_h2s_rvq_whole_3_Youtube3D"  # 3-quantizer tokens (we'll use first 3)
+  TASK_PATH: prepare/instructions/template_pretrain.json  # Only T2M task for faster training
+
+  WORD_VERTILIZER_PATH: prepare/deps/glove
+  H2S:
+      DATASET_NAME: youtube3d
+      ROOT: /data/hwu/slg_data/Youtube3D
+      YOUTUBE3D_ROOT: /data/hwu/slg_data/Youtube3D
+      CSL_ROOT: /data/hwu/slg_data/CSL-Daily
+      PHOENIX_ROOT: /data/hwu/slg_data/Phoenix_2014T
+      MEAN_PATH: /data/hwu/slg_data/Youtube3D/youtube3d_mean.pt
+      STD_PATH: /data/hwu/slg_data/Youtube3D/youtube3d_std.pt
+      MAX_MOTION_LEN: 400
+      MIN_MOTION_LEN: 40
+      MAX_TEXT_LEN: 40
+      PICK_ONE_TEXT: true
+      FRAME_RATE: 20.0
+      UNIT_LEN: 4
+      STD_TEXT: False
+
+
+METRIC:
+  TYPE: ["TM2TMetrics"]  # Text-to-motion metrics for LM stage
+
+LOSS:
+  LAMBDA_CLS: 1.0  # Cross-entropy loss weight
+  # Note: Hierarchical RVQ-GPT uses 3 separate cross-entropy losses:
+  # - Q0 loss (coarse)
+  # - Q1 loss (medium)
+  # - Q2 loss (fine)
+  # All weighted equally
+
+# Model configuration for Hierarchical RVQ-GPT
+model:
+  target: mGPT.models.mgpt.MotionGPT
+  params:
+    condition: "text"
+    task: "t2m"
+    lm: ${lm.rvq_hierarchical}      # Hierarchical RVQ-GPT architecture
+    motion_vae: ${vq.h2s_rvq_3}       # Use pretrained 3-quantizer RVQ-VAE
+    hand_vae_cfg: null              # Not used - single VAE architecture
+    rhand_vae_cfg: null             # Not used - single VAE architecture
+    codebook_size: 512              # Must match RVQ-VAE codebook size
+
+# LM reference
+lm:
+  rvq_hierarchical:
+    target: mGPT.archs.mgpt_rvq_hierarchical.HierarchicalRVQGPT
+    params:
+      num_vq: 2048
+      embed_dim: 1024
+      block_size: 100
+      num_layers: 9
+      n_head: 16
+      dropout: 0.1
+      text_encoder_type: bert  # Options: 'clip' (dim=512), 'bert' (dim=768), 'bert-large' (dim=1024)
+      pkeep: 0.5  # 1.0=full teacher forcing, 0.5=scheduled sampling, 0.0=no teacher forcing
+
+# VQ reference
+vq:
+  h2s_rvq:
+    target: mGPT.archs.mgpt_rvq.RVQVae
+    params:
+      num_quantizers: 3  # Full 6-quantizer VAE (only first 3 used by LM)
+      quantizer: 'ema_reset'
+      quantize_dropout_prob: 0.2
+      quantize_dropout_cutoff_index: 0
+      shared_codebook: false
+      code_num: 512
+      code_dim: 512
+      output_emb_width: 512
+      down_t: 2
+      stride_t: 2
+      width: 512
+      depth: 3
+      dilation_growth_rate: 3
+      norm: None
+      activation: 'relu'
+      nfeats: 133  # How2Sign full body features
+
+LOGGER:
+  TYPE: ["wandb"]
+  VAL_EVERY_STEPS: 10
+  WANDB:
+    params:
+      project: SLG
+      name: ${NAME}
+      tags: ['hierarchical', 'rvq', 'text2motion', 'how2sign']
+      notes: |
+        Hierarchical RVQ-GPT: Uses first 3 of 6 quantizers (Q0→Q1→Q2)
+        - Q0 decoder: Coarse codes (text-only conditioning)
+        - Q1 decoder: Medium refinement (conditioned on Q0 + text)
+        - Q2 decoder: Fine refinement (conditioned on Q0 + Q1 + text)
+        - EOS token (index 512) for learned length control
+        - pkeep=0.5 scheduled sampling to reduce exposure bias
+        - Output head: num_vq+1 (512 motion codes + 1 EOS)

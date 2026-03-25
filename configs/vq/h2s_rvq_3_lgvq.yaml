@@ -1,0 +1,40 @@
+target: mGPT.archs.mgpt_rvq_lgvq.RVQVaeLGVQ
+params:
+  # Residual Quantization Parameters
+  num_quantizers: 3
+  quantizer: 'ema_reset'
+  quantize_dropout_prob: 0.2
+  quantize_dropout_cutoff_index: 0
+  shared_codebook: false
+
+  # Codebook Parameters
+  code_num: 512
+  code_dim: 512
+  output_emb_width: 512
+
+  # Encoder/Decoder Architecture
+  down_t: 2
+  stride_t: 2
+  width: 512
+  depth: 3
+  dilation_growth_rate: 3
+  norm: None
+  activation: 'relu'
+
+  # Input Dimension
+  nfeats: ${DATASET.NFEATS}
+
+  # Ablation (from parent config)
+  ablation: ${ABLATION}
+
+  # LG-VQ Language-Guided Parameters
+  clip_model_name: 'ViT-B/32'
+  clip_text_max_len: 30
+  mask_transformer_layers: 2
+  mask_transformer_heads: 4
+  max_motion_len: 128        # Max compressed temporal length (T' = T/4)
+  drop_prob: 0.1
+  nce_weight: 0.001          # NCE contrastive loss weight
+  mask_weight: 0.01          # Masked text prediction loss weight
+  wrs_weight: 0.0001         # Weighted Relation Supervision loss weight
+  label_smoothing: 0.1       # Label smoothing for MLM

@@ -1,0 +1,41 @@
+target: mGPT.archs.mgpt_rvq_align.RVQVaeAlign
+params:
+  # Residual Quantization Parameters (same as h2s_rvq_3)
+  num_quantizers: 3
+  quantizer: 'ema_reset'
+  quantize_dropout_prob: 0.2
+  quantize_dropout_cutoff_index: 0
+  shared_codebook: false
+
+  # Codebook Parameters
+  code_num: 512
+  code_dim: 512
+  output_emb_width: 512
+
+  # Encoder/Decoder Architecture
+  down_t: 2
+  stride_t: 2
+  width: 512
+  depth: 3
+  dilation_growth_rate: 3
+  norm: None
+  activation: 'relu'
+
+  # Input Dimension
+  nfeats: ${DATASET.NFEATS}
+
+  # Ablation (from parent config)
+  ablation: ${ABLATION}
+
+  # Contrastive Alignment Parameters (MotionBind-inspired)
+  lambda_align: 0.01           # Alignment loss weight
+  tau_align: 0.07              # InfoNCE temperature
+  align_proj_dim: 256          # Projection dimension
+  clip_model: 'ViT-B/32'      # Frozen CLIP model
+
+  # Length-aware weighting (Eq. 6 in MotionBind)
+  length_penalty_lambda: 1.0   # Strength of length penalty
+  length_penalty_delta: 0.2    # Normalized length diff threshold
+
+  # Semantic margin (Eq. 7 in MotionBind)
+  semantic_margin_rho: 0.5     # Text similarity threshold for margin

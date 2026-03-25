@@ -1,0 +1,63 @@
+# Dedicated config for the Codex triplet contrastive pipeline.
+#
+# Usage:
+#   python -m contrastive.train_codex --config contrastive/configs/new_contrastive_codex.yaml
+#   python -m contrastive.train_codex --config contrastive/configs/new_contrastive_codex.yaml --use_gpus 0,1
+
+data:
+  dataset_name: youtube3d
+  root: /data/hwu/slg_data/Youtube3D
+  youtube3d_root: /data/hwu/slg_data/Youtube3D
+  audio_dir: /data/hwu/slg_data/Youtube3D
+  mean_path: /data/hwu/slg_data/Youtube3D/youtube3d_mean.pt
+  std_path: /data/hwu/slg_data/Youtube3D/youtube3d_std.pt
+  max_motion_length: 400
+  min_motion_length: 40
+  unit_length: 4
+  preload_features: True
+  precomputed_feat_dir: /data/hwu/slg_data/Youtube3D/precomputed_feats
+
+model:
+  speech_encoder_type: hubert-large
+  text_encoder_type: clip
+  proj_dim: 512
+
+  projection_head:
+    num_layers: 4
+    nhead: 8
+    ff_dim: 2048
+    dropout: 0.1
+    speech_max_seq_len: 1500
+    text_max_seq_len: 77
+    motion_max_seq_len: 128
+
+  loss:
+    temperature_init: 0.07
+
+vae:
+  params:
+    nfeats: 133
+    num_quantizers: 3
+    code_dim: 512
+    code_num: 512
+    output_emb_width: 512
+    down_t: 2
+    stride_t: 2
+    width: 512
+    depth: 3
+    dilation_growth_rate: 3
+  checkpoint: "experiments/mgpt/DETO_RVQ_wholebody_3_youtube/checkpoints/min-youtube3d_MPJPE_PA_handepoch=109.ckpt"
+
+training:
+  batch_size: 128
+  max_epochs: 100
+  lr: 2e-4
+  weight_decay: 0.01
+  num_workers: 16
+  precision: 32-true
+  gradient_clip_val: 1.0
+  devices: [0]
+
+logger:
+  project: SContrastiveG
+  name: new_contrastive_codex_ytb

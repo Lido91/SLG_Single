@@ -23,6 +23,7 @@ class BaseModel(LightningModule):
         self.test_step_outputs = []
         self.all_name2scores = {}
         self.times = []
+        self.infer_sample_counts = []
         self.rep_i = 0
         cfg = self.hparams.cfg
         self.output_dir = Path(
@@ -86,21 +87,38 @@ class BaseModel(LightningModule):
         dico.update(self.loss_log_dict('val'))
         # Log metrics
         dico.update(self.metrics_log_dict())
-        # print('dico', dico)
+
+        # Log inference time statistics
+        if len(self.times) > 0:
+            avg_time = sum(self.times) / len(self.times)
+            total_time = sum(self.times)
+            total_samples = sum(self.infer_sample_counts)
+            avg_per_sample = total_time / total_samples if total_samples > 0 else 0
+            print(f"[Inference Time] val epoch: "
+                  f"total={total_time:.2f}s, "
+                  f"avg={avg_time*1000:.1f}ms/batch, "
+                  f"avg={avg_per_sample*1000:.1f}ms/sample, "
+                  f"num_batches={len(self.times)}, "
+                  f"num_samples={total_samples}")
+            dico["Metrics/val_infer_time_avg_ms_per_batch"] = avg_time * 1000
+            dico["Metrics/val_infer_time_avg_ms_per_sample"] = avg_per_sample * 1000
+            dico["Metrics/val_infer_time_total_s"] = total_time
+            self.times.clear()
+            self.infer_sample_counts.clear()
+
         # Write to log only if not sanity check
         if not self.trainer.sanity_checking:
             self.log_dict(dico, sync_dist=True, rank_zero_only=True)
-            # print('dico', dico)
         # dist.barrier()
-        # print(f'{dist.get_rank()}: val epoch end')
 
     def on_test_epoch_end(self):
         #print before sync
         if 'lm' in self.hparams.stage:
             name2scores = getattr(self.metrics.TM2TMetrics, 'name2scores')
-            metrics = ["how2sign_DTW_MPJPE_PA_lhand", "how2sign_DTW_MPJPE_PA_rhand", "how2sign_DTW_MPJPE_PA_body", 
+            metrics = ["how2sign_DTW_MPJPE_PA_lhand", "how2sign_DTW_MPJPE_PA_rhand", "how2sign_DTW_MPJPE_PA_body",
                            "csl_DTW_MPJPE_PA_lhand", "csl_DTW_MPJPE_PA_rhand", "csl_DTW_MPJPE_PA_body",
-                           "phoenix_DTW_MPJPE_PA_lhand", "phoenix_DTW_MPJPE_PA_rhand", "phoenix_DTW_MPJPE_PA_body"]
+                           "phoenix_DTW_MPJPE_PA_lhand", "phoenix_DTW_MPJPE_PA_rhand", "phoenix_DTW_MPJPE_PA_body",
+                           "youtube3d_DTW_MPJPE_PA_lhand", "youtube3d_DTW_MPJPE_PA_rhand", "youtube3d_DTW_MPJPE_PA_body"]
             scores, count = {}, {}
             for m in metrics:
                 scores[m] = count[m] = 0
@@ -132,6 +150,22 @@ class BaseModel(LightningModule):
             with open(os.path.join(save_dir, 'test_scores.json'), 'w') as f:
                 json.dump(getattr(self.metrics.MRMetrics, 'name2scores'), f)
         
+        # Log inference time statistics
+        if len(self.times) > 0:
+            avg_time = sum(self.times) / len(self.times)
+            total_time = sum(self.times)
+            total_samples = sum(self.infer_sample_counts)
+            avg_per_sample = total_time / total_samples if total_samples > 0 else 0
+            rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+            print(f"[Inference Time] test epoch (rank {rank}): "
+                  f"total={total_time:.2f}s, "
+                  f"avg={avg_time*1000:.1f}ms/batch, "
+                  f"avg={avg_per_sample*1000:.1f}ms/sample, "
+                  f"num_batches={len(self.times)}, "
+                  f"num_samples={total_samples}")
+            self.times.clear()
+            self.infer_sample_counts.clear()
+
         self.rep_i = self.rep_i + 1
         # Free up the memory
         self.test_step_outputs.clear()
@@ -155,7 +189,7 @@ class BaseModel(LightningModule):
 
         return new_state_dict
 
-    def load_state_dict(self, state_dict, strict=True):
+    def load_state_dict(self, state_dict, strict=False):
         new_state_dict = self.preprocess_state_dict(state_dict)
         super().load_state_dict(new_state_dict, strict)
 

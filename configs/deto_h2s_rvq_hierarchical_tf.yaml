@@ -1,7 +1,7 @@
-NAME: DETO_RVQ_Hierarchical_tf  # Hierarchical RVQ-GPT for How2Sign
+NAME: DETO_RVQ_Hierarchical_3laye_trainr # Hierarchical RVQ-GPT for How2Sign
 ACCELERATOR: "gpu"
 NUM_NODES: 1
-DEVICE: [0]
+DEVICE: [0,1,2]
 
 TRAIN:
   STAGE: lm_pretrain  # Hierarchical RVQ-GPT stage (logs per-decoder losses & accuracies)
@@ -30,8 +30,8 @@ EVAL:
   SPLIT: val
 
 TEST:
-  CHECKPOINTS: "experiments/mgpt/DETO_RVQ_Hierarchical/checkpoints/last.ckpt"  # Will be set after training
-  SPLIT: test
+  CHECKPOINTS: "experiments/mgpt/DETO_RVQ_Hierarchical_3layer_not_weighted/checkpoints/min-how2sign_DTW_MPJPE_PA_lhandepoch=139.ckpt"  # Will be set after training
+  SPLIT: train
   BATCH_SIZE: 16
   REPLICATION_TIMES: 1
   SAVE_PREDICTIONS: true
@@ -93,7 +93,7 @@ lm:
       n_head: 16
       dropout: 0.1
       text_dim: 512  # CLIP text dimension
-      pkeep: 1  # 1.0=full teacher forcing, 0.5=scheduled sampling, 0.0=no teacher forcing
+      pkeep: 0.5  # 1.0=full teacher forcing, 0.5=scheduled sampling, 0.0=no teacher forcing
 
 # VQ reference
 vq:

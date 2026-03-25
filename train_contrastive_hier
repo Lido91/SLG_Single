@@ -1,0 +1,2 @@
+python -m contrastive.train --config contrastive/configs/contrastive_h2s.yaml --use_gpus 0
+python -m train --cfg configs/deto_h2s_rvq_hierarchical_3layer_hubert_contrastive.yaml --use_gpus 0 --nodebug

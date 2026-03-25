@@ -172,7 +172,7 @@ def load_phoenix_sample(ann, data_dir, need_pose=True, code_path=None, need_code
     if need_pose:
         for frame_id, frame in enumerate(frame_list):
             frame = os.path.join(data_dir, name, frame)
-            with open(frame, 'rb') as f: 
+            with open(frame, 'rb') as f:
                 poses = pickle.load(f)
 
             pose = np.concatenate([poses[key] for key in keys], 0)
@@ -186,6 +186,58 @@ def load_phoenix_sample(ann, data_dir, need_pose=True, code_path=None, need_code
     if need_code:
         try:
             fname = os.path.join(code_path, 'phoenix', f'{name}.npy')
+            code = np.load(fname)[0]
+        except:
+            fname = os.path.join(code_path, f'{name}.npy')
+            code = np.load(fname)[0]
+
+    return clip_poses, clip_text, name, code
+
+
+def load_youtube3d_sample(ann, data_dir, need_pose=True, code_path=None, need_code=False):
+    """Load a youtube3d sample.
+
+    YouTube3D format differs from How2Sign:
+    - Arrays are 2D with shape (1, N) instead of 1D (N,)
+    - File naming: frame_XXXXXX_person_0.pkl
+
+    Note: data_dir should already be the poses directory (e.g., {youtube3d_root}/{split}/poses)
+    """
+    name = ann['name']
+    # data_dir is already the poses directory, just append the sample name
+    base_dir = os.path.join(data_dir, name)
+
+    # YouTube3D uses different file naming: frame_XXXXXX_person_0.pkl
+    frame_files = sorted([f for f in os.listdir(base_dir) if f.endswith('.pkl')])
+    frame_list = [os.path.join(base_dir, f) for f in frame_files]
+
+    fps = ann.get('fps', 24)  # Default to 24 fps if not specified
+    if fps > 24:
+        frame_list = sample(frame_list, count=int(24*len(frame_list)/fps))
+    if len(frame_list) < 4:
+        return None, None, None, None
+
+    clip_poses = np.zeros([len(frame_list), 179])
+    clip_text = ann['text']
+
+    if need_pose:
+        for frame_id, frame in enumerate(frame_list):
+            with open(frame, 'rb') as f:
+                poses = pickle.load(f)
+
+            # YouTube3D format: each value is (1, N), squeeze to (N,)
+            pose = np.concatenate([poses[key].squeeze(0) for key in keys], 0)
+            clip_poses[frame_id] = pose
+
+        # Remove lower body joints
+        clip_poses = clip_poses[:,(3+3*11):]
+        # Remove shape
+        clip_poses = np.concatenate([clip_poses[:, :-20], clip_poses[:, -10:]], axis=1) #179-36-10=133
+
+    code = None
+    if need_code:
+        try:
+            fname = os.path.join(code_path, 'youtube3d', f'{name}.npy')
             code = np.load(fname)[0]
         except:
             fname = os.path.join(code_path, f'{name}.npy')

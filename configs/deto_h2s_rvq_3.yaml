@@ -10,7 +10,7 @@ TRAIN:
   END_EPOCH: 500
   RESUME: ""
   PRETRAINED: 
-  PRETRAINED_VAE:   "experiments/mgpt/DETO_RVQ_wholebody_3/checkpoints/min-how2sign_MPJPE_PA_handepoch=489.ckpt"
+  PRETRAINED_VAE:   ""
 
   OPTIM:
     target: AdamW

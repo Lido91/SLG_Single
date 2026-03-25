@@ -1,0 +1,83 @@
+# Fine-Grained Contrastive Learning Config (paper 2507.23188)
+# Adapted for Speech-Motion-Text (3 modalities)
+#
+# Usage:
+#   python -m contrastive.train_finegrained --config contrastive/configs/contrastive_finegrained.yaml
+#   python -m contrastive.train_finegrained --config contrastive/configs/contrastive_finegrained.yaml --use_gpus 0,1
+
+# Data (same dataset as original contrastive)
+data:
+  dataset_name: youtube3d
+  root: /data/hwu/slg_data/Youtube3D
+  youtube3d_root: /data/hwu/slg_data/Youtube3D
+  audio_dir: /data/hwu/slg_data/Youtube3D
+  mean_path: /data/hwu/slg_data/Youtube3D/youtube3d_mean.pt
+  std_path: /data/hwu/slg_data/Youtube3D/youtube3d_std.pt
+  max_motion_length: 400
+  min_motion_length: 40
+  unit_length: 4
+  # Precomputed features (run extract_features.py first)
+  preload_features: False
+  precomputed_feat_dir: /data/hwu/slg_data/Youtube3D/precomputed_feats
+
+# Model
+model:
+  speech_encoder_type: wavlm-large    # Paper recommends WavLM
+  text_encoder_type: distilbert       # Paper uses DistilBERT + 2-layer Transformer
+  latent_dim: 512                     # C = 512 (paper setting)
+
+  # Motion Encoder (frozen VAE + trainable transformer)
+  motion:
+    num_layers: 4                     # Trainable transformer layers on top of VAE
+    nhead: 8
+
+  # Memory-Retrieval Audio Encoder
+  audio:
+    num_memory_tokens: 128            # Learnable memory tokens for cross-attention
+    num_attn_layers: 2                # Number of cross-attention layers
+    target_length: 32                 # Compressed audio sequence length
+
+  # Text Encoder
+  text:
+    transformer_layers: 2             # 2-layer Transformer on top of DistilBERT
+    max_text_len: 77                  # Max text token length
+
+  # Loss
+  loss:
+    temperature_init: 0.07            # Initial temperature for contrastive loss
+    lambda_recon: 0.1                 # Reconstruction loss weight (paper: 0.1)
+    mask_ratio: 0.5                   # Motion token mask ratio for reconstruction
+
+  # Reconstruction Decoder
+  reconstruction:
+    num_layers: 2
+    nhead: 8
+
+# VAE (frozen, pretrained — same as original contrastive)
+vae:
+  params:
+    nfeats: 133
+    num_quantizers: 3
+    code_dim: 512
+    code_num: 512
+    output_emb_width: 512
+    down_t: 2
+    stride_t: 2
+    width: 512
+    depth: 3
+    dilation_growth_rate: 3
+  checkpoint: "experiments/mgpt/DETO_RVQ_wholebody_3_youtube/checkpoints/min-youtube3d_MPJPE_PA_handepoch=109.ckpt"
+
+# Training (following paper: 200 epochs, batch 64, AdamW)
+training:
+  batch_size: 64                     # Per GPU (paper uses 64 total on 8 GPUs)
+  max_epochs: 200                     # Paper: 200 epochs
+  lr: 2e-4                            # Paper: 1e-4 with linear decay to 1e-5
+  weight_decay: 0.01
+  num_workers: 16
+  devices: [0, 1]
+
+# Logging
+logger:
+  project: SContrastiveG
+  name: FineGrained_Contrastive_Youtube3d

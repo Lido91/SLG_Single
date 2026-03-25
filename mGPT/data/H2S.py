@@ -25,7 +25,20 @@ class H2SDataModule(BASEDataModule):
         self.hparams.dataset_name = cfg.DATASET.H2S.DATASET_NAME
         self.hparams.csl_root = cfg.DATASET.H2S.CSL_ROOT
         self.hparams.phoenix_root = cfg.DATASET.H2S.get('PHOENIX_ROOT', None)
+        self.hparams.youtube3d_root = cfg.DATASET.H2S.get('YOUTUBE3D_ROOT', None)
         self.hparams.pred_data_dir = cfg.DATASET.H2S.get('pred_data_dir', False)
+        self.hparams.balanced = cfg.DATASET.H2S.get('BALANCED', False)
+        self.hparams.gloss = cfg.DATASET.H2S.get('GLOSS', '')
+
+        # Precomputed CLIP text features for LG-VQ
+        use_clip_feat = cfg.DATASET.H2S.get('USE_CLIP_FEAT', True)
+        self.hparams.clip_feat_dir = cfg.DATASET.H2S.get('CLIP_FEAT_DIR', None) if use_clip_feat else None
+
+        # Audio config for speech-driven generation
+        self.hparams.audio_dir = cfg.DATASET.H2S.get('AUDIO_DIR', None)
+        self.hparams.use_speech = cfg.DATASET.H2S.get('USE_SPEECH', False)
+        self.hparams.preload_audio = cfg.DATASET.H2S.get('PRELOAD_AUDIO', False)
+        self.hparams.precomputed_speech_dir = cfg.DATASET.H2S.get('PRECOMPUTED_SPEECH_DIR', None)
         
         # Path to the dataset
         data_root = cfg.DATASET.H2S.ROOT
