@@ -10,12 +10,12 @@ TRAIN:
   END_EPOCH: 150
   RESUME: ""
   PRETRAINED:
-  PRETRAINED_VAE: experiments/mgpt/DETO_RVQ_wholebody_3_lgvq_youtube/checkpoints/last.ckpt  # Pretrained LGVQ RVQ-VAE on Youtube3D
+  PRETRAINED_VAE: experiments/mgpt/DETO_RVQ_wholebody_3_lgvq_youtube/checkpoints/min-youtube3d_MPJPE_PA_handepoch=249.ckpt # Pretrained LGVQ RVQ-VAE on Youtube3D
 
   OPTIM:
     target: AdamW
     params:
-      lr: 2e-4  # Learning rate for hierarchical GPT
+      lr: 3e-4  # Learning rate for hierarchical GPT
       betas: [0.9, 0.99]
       weight_decay: 0.01
 
@@ -30,7 +30,7 @@ EVAL:
   SPLIT: val
 
 TEST:
-  CHECKPOINTS: experiments/mgpt/${NAME}/checkpoints/last.ckpt
+  CHECKPOINTS: experiments/mgpt/DETO_RVQ_Hierarchical_3layer_lgvq_ytb_drop/checkpoints/min-youtube3d_DTW_MPJPE_PA_lhandepoch=69.ckpt
   SPLIT: test
   BATCH_SIZE: 16
   REPLICATION_TIMES: 1
@@ -99,7 +99,7 @@ lm:
       dropout: 0.1
       text_encoder_type: clip  # Options: 'clip' (dim=512), 'bert' (dim=768), 'bert-large' (dim=1024)
       pkeep: 0.5  # 1.0=full teacher forcing, 0.5=scheduled sampling, 0.0=no teacher forcing
-      corrupt_ratio: 0.5  # Per-time RVQ corruption (T2M-HiFiGPT): fraction of timesteps replaced with random codes (0.0=disabled)
+      corrupt_ratio: 0.0  # Per-time RVQ corruption (T2M-HiFiGPT): fraction of timesteps replaced with random codes (0.0=disabled)
 
 # VQ reference
 vq:

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from .base import BaseLosses
 
 
@@ -52,6 +53,16 @@ class GPTLosses(BaseLosses):
             losses.append("vqstyle_nce")
             params['vqstyle_nce'] = 0.0
 
+            # Hand reconstruction loss (extra weight on hand dims 33:123)
+            losses.append("recons_hand")
+            params['recons_hand'] = cfg.LOSS.get('LAMBDA_HAND', 0.0)
+
+            # Per-part reconstruction losses — logged only (weight = 0).
+            # Real gradient contribution comes from the combined `recons_feature`.
+            for part in ("body", "lhand", "rhand", "head"):
+                losses.append(f"recons_{part}")
+                params[f"recons_{part}"] = 0.0
+
             # Codebook perplexity (monitoring only, weight=0)
             losses.append("vq_perplexity")
             params['vq_perplexity'] = 0.0
@@ -87,10 +98,47 @@ class GPTLosses(BaseLosses):
             losses.append("masked_acc")   # Token prediction accuracy
             params['masked_acc'] = 0.0    # Just for logging
 
+        # Per-part reconstruction weights (for 4-branch multi-branch encoder).
+        # When any of these is > 0, `recons_feature` becomes a CommitLoss
+        # passthrough and is computed as a weighted sum of per-part SmoothL1
+        # inside update(). Logged under the original name `recons/feature/train`.
+        self._part_weights = {
+            'body':  cfg.LOSS.get('LAMBDA_BODY',  0.0),
+            'lhand': cfg.LOSS.get('LAMBDA_LHAND', 0.0),
+            'rhand': cfg.LOSS.get('LAMBDA_RHAND', 0.0),
+            'head':  cfg.LOSS.get('LAMBDA_HEAD',  0.0),
+        }
+        self._part_slices = {
+            'body':  (0,   30),
+            'lhand': (30,  75),
+            'rhand': (75,  120),
+            'head':  (120, 133),
+        }
+        self._use_combined_recons = any(w > 0.0 for w in self._part_weights.values())
+
+        # Use functional API (not nn.Module instances) since these attributes
+        # are assigned before super().__init__() is called below.
+        if recons_loss == "l1":
+            self._recons_fn = F.l1_loss
+        elif recons_loss == "l2":
+            self._recons_fn = F.mse_loss
+        elif recons_loss == "l1_smooth":
+            self._recons_fn = F.smooth_l1_loss
+        else:
+            self._recons_fn = F.smooth_l1_loss
+
+        # In combined mode, recons_feature acts as a passthrough and always
+        # contributes with weight 1.0 (per-part weights are applied manually).
+        if self._use_combined_recons and stage == "vae":
+            params['recons_feature'] = 1.0
+
         # Define loss functions & weights
         losses_func = {}
         for loss in losses:
-            if loss.split('_')[0] == 'recons':
+            if loss == 'recons_feature' and self._use_combined_recons:
+                # Pre-computed scalar → use passthrough CommitLoss
+                losses_func[loss] = CommitLoss
+            elif loss.split('_')[0] == 'recons':
                 if recons_loss == "l1":
                     losses_func[loss] = nn.L1Loss
                 elif recons_loss == "l2":
@@ -118,10 +166,26 @@ class GPTLosses(BaseLosses):
         total: float = 0.0
 
         if self.stage in ["vae"]:
-            total += self._update_loss("recons_feature", rs_set['m_rst'],
-                                       rs_set['m_ref'])
-            # total += self._update_loss("recons_joints", rs_set['joints_rst'], rs_set['joints_ref'])
             nfeats = rs_set['m_rst'].shape[-1]
+            if self._use_combined_recons and nfeats >= 133:
+                # Combined per-part reconstruction loss (weighted sum of 4 parts)
+                m_rst = rs_set['m_rst']
+                m_ref = rs_set['m_ref']
+                combined = None
+                for part, (s, e) in self._part_slices.items():
+                    # Raw per-part SmoothL1 (unweighted) for monitoring
+                    raw = self._recons_fn(m_rst[..., s:e], m_ref[..., s:e])
+                    self._update_loss(f"recons_{part}", raw, raw)
+                    # Weighted contribution to the combined loss
+                    w = self._part_weights[part]
+                    if w > 0.0:
+                        term = w * raw
+                        combined = term if combined is None else combined + term
+                total += self._update_loss("recons_feature", combined, combined)
+            else:
+                total += self._update_loss("recons_feature", rs_set['m_rst'],
+                                           rs_set['m_ref'])
+            # total += self._update_loss("recons_joints", rs_set['joints_rst'], rs_set['joints_ref'])
             if nfeats in [263, 135 + 263]:
                 if nfeats == 135 + 263:
                     vel_start = 135 + 4
@@ -162,6 +226,12 @@ class GPTLosses(BaseLosses):
             if 'loss_nce' in rs_set:
                 self._update_loss("vqstyle_nce", rs_set['loss_nce'],
                                   rs_set['loss_nce'])
+
+            # Hand reconstruction loss (dims 33:123 = left hand + right hand)
+            if self._params['recons_hand'] > 0.0 and nfeats >= 123:
+                total += self._update_loss("recons_hand",
+                                           rs_set['m_rst'][..., 33:123],
+                                           rs_set['m_ref'][..., 33:123])
 
             # Codebook perplexity for monitoring (not added to total)
             if 'perplexity' in rs_set:

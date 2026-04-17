@@ -503,6 +503,18 @@ class HierarchicalRVQGPT(nn.Module):
         B, T = motion_q0.shape
         device = motion_q0.device
 
+        # Same-level scheduled sampling: replace some input tokens with random codes
+        # This reduces exposure bias within each decoder's autoregressive input
+        if self.training and pkeep < 1.0:
+            mask_q0 = torch.bernoulli(pkeep * torch.ones_like(motion_q0, dtype=torch.float)).long()
+            motion_q0 = mask_q0 * motion_q0 + (1 - mask_q0) * torch.randint_like(motion_q0, self.num_vq)
+
+            mask_q1 = torch.bernoulli(pkeep * torch.ones_like(motion_q1, dtype=torch.float)).long()
+            motion_q1 = mask_q1 * motion_q1 + (1 - mask_q1) * torch.randint_like(motion_q1, self.num_vq)
+
+            mask_q2 = torch.bernoulli(pkeep * torch.ones_like(motion_q2, dtype=torch.float)).long()
+            motion_q2 = mask_q2 * motion_q2 + (1 - mask_q2) * torch.randint_like(motion_q2, self.num_vq)
+
         # Project conditioning features to decoder dimension
         if text_features.dim() == 2:
             text_features = text_features.unsqueeze(1)  # (B, text_dim) → (B, 1, text_dim)
@@ -1137,26 +1149,53 @@ class HierarchicalRVQGPT_6_layer(nn.Module):
         embed_dim=1024,
         block_size=200,
         num_layers=9,
+        num_layers_q0=None,  # Per-decoder layer counts (default to num_layers)
+        num_layers_q1=None,
+        num_layers_q2=None,
+        num_layers_q3=None,
+        num_layers_q4=None,
+        num_layers_q5=None,
         n_head=16,
+        n_kv_head=None,  # GQA KV heads for LlamaGen Q0 (default = n_head = standard MHA)
+        drop_path_rate=0.0,  # DropPath rate for LlamaGen Q0
         dropout=0.1,
         text_dim=512,
         text_encoder_type='clip',  # 'clip', 'bert', or 'bert-large'
         pkeep=1.0,
         conditioning_mode='chain',  # 'chain' or 'full'
+        q0_decoder_type='transformer',  # 'transformer' or 'llamagen'
+        corrupt_ratio=0.0,  # Per-time RVQ corruption fraction (T2M-HiFiGPT Sec 3.4)
+        use_speech=False,  # Accepted for compatibility with MotionGPT wrapper; must be False
+        speech_encoder_type=None,  # Accepted for compatibility; not supported here
     ):
         super().__init__()
 
         assert conditioning_mode in ['chain', 'full'], f"conditioning_mode must be 'chain' or 'full', got {conditioning_mode}"
+        assert q0_decoder_type in ['transformer', 'llamagen'], f"q0_decoder_type must be 'transformer' or 'llamagen', got {q0_decoder_type}"
+        assert not use_speech, "HierarchicalRVQGPT_6_layer is text-only; set condition='text' in the top-level config."
 
         self.num_vq = num_vq
         self.embed_dim = embed_dim
         self.block_size = block_size
         self.num_layers = num_layers
+        # Per-decoder layer counts (default to num_layers if not specified)
+        self.num_layers_per_q = [
+            num_layers_q0 if num_layers_q0 is not None else num_layers,
+            num_layers_q1 if num_layers_q1 is not None else num_layers,
+            num_layers_q2 if num_layers_q2 is not None else num_layers,
+            num_layers_q3 if num_layers_q3 is not None else num_layers,
+            num_layers_q4 if num_layers_q4 is not None else num_layers,
+            num_layers_q5 if num_layers_q5 is not None else num_layers,
+        ]
         self.num_quantizers_used = 6  # Use all 6 quantizers
         self.pkeep = pkeep
         self.eos_token_id = num_vq
         self.conditioning_mode = conditioning_mode
         self.text_encoder_type = text_encoder_type
+        self.q0_decoder_type = q0_decoder_type
+        self.n_kv_head = n_kv_head if n_kv_head is not None else n_head
+        self.drop_path_rate = drop_path_rate
+        self.corrupt_ratio = corrupt_ratio
 
         # Initialize text encoder
         self.text_encoder = TextEncoder(encoder_type=text_encoder_type, freeze=True)
@@ -1173,20 +1212,28 @@ class HierarchicalRVQGPT_6_layer(nn.Module):
         else:
             print(f"{'Conditioning:':<20} Each Qi depends on Q0..Q(i-1) + text")
         print(f"{'Quantizers Used:':<20} 6 (all from RVQ-VAE)")
-        print(f"{'Num Layers:':<20} {num_layers}")
+        print(f"{'Num Layers:':<20} {num_layers} (default)")
+        print(f"{'Layers per Q:':<20} {self.num_layers_per_q}")
         print(f"{'Embed Dim:':<20} {embed_dim}")
         print(f"{'Num Heads:':<20} {n_head}")
+        if q0_decoder_type == 'llamagen':
+            print(f"{'Num KV Heads (Q0):':<20} {self.n_kv_head}")
+            print(f"{'Q0 Architecture:':<20} LlamaGen (RMSNorm, GQA+RoPE, SwiGLU, prefix-concat)")
+            print(f"{'DropPath Rate (Q0):':<20} {drop_path_rate}")
+        else:
+            print(f"{'Q0 Architecture:':<20} Transformer Decoder (LayerNorm, MHA, GELU, cross-attention)")
         print(f"{'Block Size:':<20} {block_size}")
         print(f"{'Codebook Size:':<20} {num_vq}")
         print(f"{'Text Encoder:':<20} {text_encoder_type}")
         print(f"{'Text Dim:':<20} {text_dim}D")
+        print(f"{'Corrupt Ratio:':<20} {corrupt_ratio}" + (" (per-time RVQ augmentation)" if corrupt_ratio > 0 else " (disabled)"))
         print(f"{'='*70}\n")
 
         # Text projection
         self.text_proj = nn.Linear(text_dim, embed_dim)
 
         # 6 Hierarchical Decoders
-        # Q0: text-only conditioning (level=0)
+        # Q0: text-only conditioning (level=0) — switchable between LlamaGen and Transformer
         # Q1+: conditioning depends on mode
         #   - chain mode: level=1 (text + prev Q only)
         #   - full mode: level=2 for Q2+ (text + all prev Qs)
@@ -1195,18 +1242,42 @@ class HierarchicalRVQGPT_6_layer(nn.Module):
         else:  # full mode
             decoder_levels = [min(i, 2) for i in range(6)]  # [0, 1, 2, 2, 2, 2]
 
-        self.decoders = nn.ModuleList([
+        # Build Q0 separately (may be LlamaGen), Q1..Q5 are always HierarchicalRVQDecoder
+        if q0_decoder_type == 'llamagen':
+            q0_decoder = LlamaGenQ0Decoder(
+                num_vq=num_vq,
+                embed_dim=embed_dim,
+                block_size=block_size,
+                num_layers=self.num_layers_per_q[0],
+                n_head=n_head,
+                n_kv_head=self.n_kv_head,
+                dropout=dropout,
+                drop_path_rate=drop_path_rate,
+            )
+        else:
+            q0_decoder = HierarchicalRVQDecoder(
+                num_vq=num_vq,
+                embed_dim=embed_dim,
+                block_size=block_size,
+                num_layers=self.num_layers_per_q[0],
+                n_head=n_head,
+                dropout=dropout,
+                quantizer_level=0,
+            )
+
+        refinement_decoders = [
             HierarchicalRVQDecoder(
                 num_vq=num_vq,
                 embed_dim=embed_dim,
                 block_size=block_size,
-                num_layers=num_layers,
+                num_layers=self.num_layers_per_q[i],
                 n_head=n_head,
                 dropout=dropout,
-                quantizer_level=decoder_levels[i]
+                quantizer_level=decoder_levels[i],
             )
-            for i in range(6)
-        ])
+            for i in range(1, 6)
+        ]
+        self.decoders = nn.ModuleList([q0_decoder] + refinement_decoders)
 
         self.apply(self._init_weights)
 
@@ -1221,6 +1292,33 @@ class HierarchicalRVQGPT_6_layer(nn.Module):
         elif isinstance(module, nn.LayerNorm):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
+
+    def _corrupt_per_time(self, motion_codes: torch.Tensor) -> torch.Tensor:
+        """Per-time corrupted RVQ augmentation (T2M-HiFiGPT Sec 3.4).
+
+        Randomly select corrupt_ratio fraction of timesteps and replace the
+        entire row (all quantizers) with random codes.
+        """
+        B, T, num_q = motion_codes.shape
+        device = motion_codes.device
+        corrupt_mask = torch.rand(B, T, device=device) < self.corrupt_ratio
+        random_codes = torch.randint(0, self.num_vq, (B, T, num_q), device=device)
+        corrupt_mask = corrupt_mask.unsqueeze(-1).expand_as(motion_codes)
+        return torch.where(corrupt_mask, random_codes, motion_codes)
+
+    def _q0_forward(self, idx, text_context, text_mask):
+        """Q0 forward pass dispatching on decoder type."""
+        if self.q0_decoder_type == 'llamagen':
+            return self.decoders[0](
+                idx=idx,
+                cond_context=text_context,
+                cond_mask=text_mask,
+            )
+        return self.decoders[0](
+            idx=idx,
+            text_context=text_context,
+            text_mask=text_mask,
+        )
 
     def forward(
         self,
@@ -1244,6 +1342,12 @@ class HierarchicalRVQGPT_6_layer(nn.Module):
         if pkeep is None:
             pkeep = self.pkeep
 
+        # Per-time corrupted RVQ augmentation: corrupt INPUT, keep GT targets clean for loss
+        if self.training and self.corrupt_ratio > 0:
+            input_codes = self._corrupt_per_time(motion_codes)
+        else:
+            input_codes = motion_codes
+
         B, T, num_q = motion_codes.shape
         device = motion_codes.device
 
@@ -1256,34 +1360,36 @@ class HierarchicalRVQGPT_6_layer(nn.Module):
         prev_embeddings = None
 
         for q_idx in range(6):
-            motion_q = motion_codes[:, :, q_idx]  # (B, T)
+            motion_q = input_codes[:, :, q_idx]        # fed to decoder (possibly corrupted)
+            target_q = motion_codes[:, :, q_idx]       # clean GT for next-decoder conditioning
 
             # Forward through decoder
-            logits_q = self.decoders[q_idx](
-                idx=motion_q,
-                text_context=text_context,
-                text_mask=text_mask,
-                prev_quantizers_context=prev_embeddings
-            )
+            if q_idx == 0:
+                logits_q = self._q0_forward(motion_q, text_context, text_mask)
+            else:
+                logits_q = self.decoders[q_idx](
+                    idx=motion_q,
+                    text_context=text_context,
+                    text_mask=text_mask,
+                    prev_quantizers_context=prev_embeddings,
+                )
             all_logits.append(logits_q)
 
-            # Prepare embeddings for next decoder
+            # Prepare embeddings for next decoder (scheduled sampling on clean GT)
             if self.training and pkeep < 1.0:
                 pred_q = logits_q.argmax(dim=-1)
                 mask = torch.rand(B, device=device) < pkeep
                 mask = mask.unsqueeze(1).expand(-1, T)
-                q_for_conditioning = torch.where(mask, motion_q, pred_q)
+                q_for_conditioning = torch.where(mask, target_q, pred_q)
             else:
-                q_for_conditioning = motion_q
+                q_for_conditioning = target_q
 
             q_embeddings = self.decoders[q_idx].get_embeddings(q_for_conditioning)
 
             # Update prev_embeddings based on conditioning mode
             if self.conditioning_mode == 'chain':
-                # Chain: only keep current quantizer's embeddings
                 prev_embeddings = q_embeddings
-            else:  # full mode
-                # Full: accumulate all previous quantizers' embeddings
+            else:  # full mode: accumulate all previous quantizers' embeddings
                 if prev_embeddings is None:
                     prev_embeddings = q_embeddings
                 else:
@@ -1342,12 +1448,21 @@ class HierarchicalRVQGPT_6_layer(nn.Module):
                         prev_embeddings = torch.cat(emb_list, dim=1)
 
                 # Generate token for this quantizer
-                logits = self.decoders[q_idx](
-                    idx=q_tokens[q_idx] if q_tokens[q_idx].shape[1] > 0 else torch.zeros((B, 1), dtype=torch.long, device=device),
-                    text_context=text_context,
-                    text_mask=text_mask,
-                    prev_quantizers_context=prev_embeddings
-                )
+                q_idx_input = q_tokens[q_idx] if q_tokens[q_idx].shape[1] > 0 else torch.zeros((B, 1), dtype=torch.long, device=device)
+                if q_idx == 0 and self.q0_decoder_type == 'llamagen':
+                    # LlamaGen Q0: full-forward each step (no KV cache in this path for simplicity)
+                    logits = self.decoders[0](
+                        idx=q_idx_input,
+                        cond_context=text_context,
+                        cond_mask=text_mask,
+                    )
+                else:
+                    logits = self.decoders[q_idx](
+                        idx=q_idx_input,
+                        text_context=text_context,
+                        text_mask=text_mask,
+                        prev_quantizers_context=prev_embeddings,
+                    )
                 logits_t = logits[:, -1, :] / temperature
 
                 if do_sample:
@@ -1400,8 +1515,12 @@ class HierarchicalRVQGPT_6_layer(nn.Module):
         """Encode text using the configured text encoder (CLIP/BERT)."""
         return self.text_encoder(texts)
 
-    def __call__(self, texts, motion_tokens, lengths, tasks=None):
-        """Training forward pass compatible with MotionGPT interface."""
+    def __call__(self, texts, motion_tokens, lengths, tasks=None,
+                 audio_waveforms=None, speech_feats=None, speech_mask=None):
+        """Training forward pass compatible with MotionGPT interface (text-only; speech kwargs ignored)."""
+        assert audio_waveforms is None and speech_feats is None, (
+            "HierarchicalRVQGPT_6_layer is text-only; got speech inputs."
+        )
         text_features, text_mask = self.encode_text(texts)
 
         B, T, _ = motion_tokens.shape

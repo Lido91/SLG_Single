@@ -1,4 +1,6 @@
 import os
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # Suppress TensorFlow logs
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"  # Disable oneDNN warnings
 import glob
 import torch
 import pytorch_lightning as pl
@@ -53,7 +55,7 @@ def main():
         logger=pl_loggers,
         callbacks=callbacks,
         check_val_every_n_epoch=cfg.LOGGER.VAL_EVERY_STEPS,
-        num_sanity_val_steps=2 if cfg.get('DEBUG', False) else 0,  # Skip sanity check unless debugging
+        num_sanity_val_steps=0,  # Skip sanity check
         accelerator=cfg.ACCELERATOR,
         devices=cfg.DEVICE,
         num_nodes=cfg.NUM_NODES,

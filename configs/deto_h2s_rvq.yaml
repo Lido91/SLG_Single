@@ -1,7 +1,7 @@
 NAME: DETO_RVQ_wholebody  # Decoupled Tokenizer for How2Sign with Residual VQ
 ACCELERATOR: "gpu"
 NUM_NODES: 1
-DEVICE: [0]
+DEVICE: [0,1,2]
 
 TRAIN:
   STAGE: vae  # VAE training stage
@@ -57,7 +57,7 @@ DATASET:
     STD_TEXT: False
 
 METRIC:
-  TYPE: ["TM2TMetrics"]  # Motion Reconstruction metrics for VAE stage
+  TYPE: ["MRMetrics"]  # Motion Reconstruction metrics for VAE stage
 
 LOSS:
   LAMBDA_FEATURE: 1.0

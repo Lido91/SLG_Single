@@ -11,7 +11,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.distributions.distribution import Distribution
 
-from .mgpt_vq import Encoder, Decoder  # Reuse existing encoder/decoder
+from .mgpt_vq import Encoder, Decoder, MultiBranchEncoder  # Reuse existing encoder/decoder
 from .tools.residual_vq import ResidualVQ, ResidualVQ_2D
 
 
@@ -69,6 +69,9 @@ class RVQVae(nn.Module):
         quantize_dropout_prob: float = 0.2,
         quantize_dropout_cutoff_index: int = 0,
         shared_codebook: bool = False,
+        multi_branch: bool = False,
+        branch_slices=None,
+        fusion_type: str = 'mlp',
         **kwargs
     ) -> None:
         super().__init__()
@@ -80,17 +83,32 @@ class RVQVae(nn.Module):
         self.quantize_dropout_prob = quantize_dropout_prob
 
         # Encoder: [B, D, T] -> [B, code_dim, T']
-        self.encoder = Encoder(
-            nfeats,
-            output_emb_width,
-            down_t,
-            stride_t,
-            width,
-            depth,
-            dilation_growth_rate,
-            activation=activation,
-            norm=norm
-        )
+        if multi_branch:
+            self.encoder = MultiBranchEncoder(
+                nfeats,
+                output_emb_width,
+                down_t,
+                stride_t,
+                width,
+                depth,
+                dilation_growth_rate,
+                activation=activation,
+                norm=norm,
+                branch_slices=branch_slices,
+                fusion_type=fusion_type,
+            )
+        else:
+            self.encoder = Encoder(
+                nfeats,
+                output_emb_width,
+                down_t,
+                stride_t,
+                width,
+                depth,
+                dilation_growth_rate,
+                activation=activation,
+                norm=norm
+            )
 
         # Residual Vector Quantizer
         self.quantizer = ResidualVQ(

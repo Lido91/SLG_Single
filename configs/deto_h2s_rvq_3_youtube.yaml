@@ -1,7 +1,7 @@
 NAME: DETO_RVQ_wholebody_3_youtube # Decoupled Tokenizer for How2Sign with Residual VQ
 ACCELERATOR: "gpu"
 NUM_NODES: 1
-DEVICE: [0,1,2]
+DEVICE: [0]
 
 TRAIN:
   STAGE: vae  # VAE training stage

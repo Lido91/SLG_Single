@@ -1,0 +1,50 @@
+target: mGPT.archs.mgpt_rvq_hierarchical_cfb.HierarchicalRVQGPTCFB
+params:
+  # Codebook (must match RVQ-VAE)
+  num_vq: 2048                    # Codebook size per quantizer
+  embed_dim: 1024                 # Token embedding dimension
+  block_size: 100                 # 400 frames / 4 = 100 tokens
+
+  # === Q0 Decoder ===
+  q0_decoder_type: transformer    # 'llamagen' or 'transformer'
+  num_layers_q0: 9                # Q0 layers (coarse - most important)
+
+  # === Q1 Decoder (Q0-style shape; cross-attn K/V is CFB-fused Q0 context) ===
+  num_layers_q1: 6                # Q1 layers (medium refinement)
+  q1_use_cond: True               # If False, CFB_Q1 degenerates to LayerNorm(Q0_emb)
+
+  # === Q2 Decoder (Q0-style shape; cross-attn K/V is CFB-fused Q0+Q1 context) ===
+  num_layers_q2: 6                # Q2 layers (fine details)
+  q2_use_cond: True
+
+  # === CFB pre-fusion stacks ===
+  num_cfb_layers_q1: 3            # CFB depth for Q1 (fuses Q0_emb with speech/text)
+  num_cfb_layers_q2: 3            # CFB depth for Q2 (fuses cat(Q0_emb, Q1_emb) with speech/text)
+  cfb_use_gate: True              # Gated FFN inside CFB (initialized to zero -> identity start)
+
+  # Default layer count (used if num_layers_qX not specified)
+  num_layers: 6
+
+  # Attention
+  n_head: 16
+  dropout: 0.1
+
+  # Teacher forcing & corruption
+  pkeep: 0.5                      # 1.0 = full GT, 0.5 = 50% scheduled sampling
+  corrupt_ratio: 0.5              # T2M-HiFiGPT Sec 3.4 per-time corruption
+
+  # === Conditioning ===
+  # Text mode: set text_encoder_type, use_speech=False
+  # Speech mode: set speech_encoder_type, use_speech=True, text_encoder_type=null
+  text_encoder_type: null
+  speech_encoder_type: hubert-large
+  use_speech: True
+
+  # === Contrastive Projection (optional, for speech mode) ===
+  contrastive_speech_ckpt: "experiments/contrastive_codex/new_contrastive_codex_h2s/checkpoints/speech_head_best.pt"
+  contrastive_proj_dim: 1024
+  contrastive_num_layers: 4
+  contrastive_nhead: 8
+  contrastive_ff_dim: 4096
+  contrastive_max_seq_len: 2000
+  freeze_contrastive_proj: True

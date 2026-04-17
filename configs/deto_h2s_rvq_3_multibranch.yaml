@@ -1,0 +1,102 @@
+NAME: DETO_RVQ_wholebody_3_multibranch_mild  # Multi-branch RVQ-VAE (4 parts: body/lhand/rhand/head) for How2Sign
+ACCELERATOR: "gpu"
+NUM_NODES: 1
+DEVICE: [0,1,2]
+
+TRAIN:
+  STAGE: vae  # VAE training stage
+  NUM_WORKERS: 16
+  BATCH_SIZE: 32 # Adjust based on GPU memory (4 branches → ~2-3x memory of single branch)
+  END_EPOCH: 500
+  RESUME: ""
+  PRETRAINED:
+  PRETRAINED_VAE: ""
+
+  OPTIM:
+    target: AdamW
+    params:
+      lr: 3e-4
+      betas: [0.9, 0.99]
+      weight_decay: 0.0
+
+  LR_SCHEDULER:
+    target: CosineAnnealingLR
+    params:
+      T_max: ${TRAIN.END_EPOCH}
+      eta_min: 1e-6
+
+EVAL:
+  BATCH_SIZE: 32
+  SPLIT: val
+
+TEST:
+  CHECKPOINTS: experiments/mgpt/DETO_RVQ_wholebody_3_multibranch_mild/checkpoints/min-how2sign_MPJPE_PA_handepoch=209.ckpt
+  SPLIT: test
+  BATCH_SIZE: 32
+  REPLICATION_TIMES: 1
+  SAVE_PREDICTIONS: true
+
+DATASET:
+  target: mGPT.data.H2S.H2SDataModule
+  CODE_PATH: "TOKENS_h2s_rvq_whole_3_multibranch"  # Not used in VAE stage
+  TASK_PATH: ""
+  WORD_VERTILIZER_PATH: prepare/deps/glove
+  H2S:
+    DATASET_NAME: how2sign
+    ROOT: /data/hwu/slg_data/How2Sign
+    CSL_ROOT: /data/hwu/slg_data/CSL-Daily
+    PHOENIX_ROOT: /data/hwu/slg_data/Phoenix_2014T
+    MEAN_PATH: /data/hwu/slg_data/CSL-Daily/mean.pt
+    STD_PATH: /data/hwu/slg_data/CSL-Daily/std.pt
+    MAX_MOTION_LEN: 400
+    MIN_MOTION_LEN: 40
+    MAX_TEXT_LEN: 40
+    PICK_ONE_TEXT: true
+    FRAME_RATE: 20.0
+    UNIT_LEN: 4
+    STD_TEXT: False
+
+METRIC:
+  TYPE: ["MRMetrics"]  # Motion Reconstruction metrics for VAE stage
+
+LOSS:
+  # Global 133D reconstruction disabled — using 4 per-part losses instead
+  # to match the 4-branch MultiBranchEncoder (body/lhand/rhand/head).
+  LAMBDA_FEATURE: 0.0
+  LAMBDA_VELOCITY: 0.0
+  LAMBDA_COMMIT: 0.02  # Commitment loss weight (averaged across all quantizer stages)
+  LAMBDA_CLS: 1.0
+  # Per-part reconstruction loss weights (133D layout)
+  #   body  [0:30]    - 30D upper-body pose (10 joints)
+  #   lhand [30:75]   - 45D left hand (15 joints)      ← emphasized
+  #   rhand [75:120]  - 45D right hand (15 joints)     ← emphasized
+  #   head  [120:133] - 13D jaw(3) + expression(10)
+  LAMBDA_BODY:  0.3
+  LAMBDA_LHAND: 0.3
+  LAMBDA_RHAND: 0.3
+  LAMBDA_HEAD:  0.1
+  ABLATION:
+    RECONS_LOSS: "l1_smooth"
+
+# Model configuration for Multi-Branch R-VQVAE
+# Differences from deto_h2s_rvq_3.yaml:
+#   - motion_vae references vq.h2s_rvq_3_multibranch (multi_branch: true, fusion_type: dual_axis)
+#   - Encoder splits 133D input into 4 body parts and fuses via attention
+model:
+  target: mGPT.models.mgpt.MotionGPT
+  params:
+    condition: "text"
+    task: "t2m"
+    lm: ${lm.default}
+    motion_vae: ${vq.h2s_rvq_3_multibranch}   # ← Multi-branch VQ config
+    hand_vae_cfg: null
+    rhand_vae_cfg: null
+
+LOGGER:
+  TYPE: ["wandb"]
+  VAL_EVERY_STEPS: 10
+  WANDB:
+    params:
+      project: SLG
+      name: ${NAME}
+      tags: ['rvqvae', 'residual_quantization', 'how2sign', 'multi_branch', 'dual_axis_fusion']

@@ -1,21 +1,20 @@
 NAME: DETO_RVQ_wholebody_3_lgvq_whisper_youtube  # RVQ-VAE with Speech-Guided (Whisper) Codebook Learning on Youtube3D
 ACCELERATOR: "gpu"
 NUM_NODES: 1
-DEVICE: [0,1]
+DEVICE: [0,1,2]
 
 TRAIN:
   STAGE: vae
   NUM_WORKERS: 8
   BATCH_SIZE: 32  # Reduced from 32 due to whisper memory overhead
   END_EPOCH: 500
-  RESUME: ""
-  PRETRAINED:
-  PRETRAINED_VAE: ""
+  RESUME: "experiments/mgpt/DETO_RVQ_wholebody_3_lgvq_whisper_youtube_2026-04-04-07-22-22"
+  PRETRAINED_VAE: "experiments/mgpt/DETO_RVQ_wholebody_3_lgvq_whisper_youtube_2026-04-04-07-22-22/checkpoints/min-youtube3d_MPJPE_PA_handepoch=159.ckpt"
 
   OPTIM:
     target: AdamW
     params:
-      lr: 2e-4
+      lr: 3e-4
       betas: [0.9, 0.99]
       weight_decay: 0.1
 
@@ -30,7 +29,7 @@ EVAL:
   SPLIT: val
 
 TEST:
-  CHECKPOINTS: experiments/mgpt/${NAME}/checkpoints/last.ckpt
+  CHECKPOINTS: experiments/mgpt/DETO_RVQ_wholebody_3_lgvq_whisper_youtube_2026-04-04-07-22-22/checkpoints/min-youtube3d_MPJPE_PA_handepoch=159.ckpt
   SPLIT: test
   BATCH_SIZE: 16
   REPLICATION_TIMES: 1

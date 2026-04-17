@@ -477,12 +477,12 @@ class LlamaGenQ0Decoder(nn.Module):
         self.max_seq_length = max_seq_length
         self.max_batch_size = max_batch_size
         head_dim = self.head_dim
+        device = next(self.parameters()).device
         for layer in self.layers:
             layer.attention.kv_cache = KVCache(
                 max_batch_size, max_seq_length, self.n_kv_head, head_dim, dtype
-            )
+            ).to(device)
         # Precompute causal mask for KV cache inference
-        device = next(self.parameters()).device
         causal_mask = torch.tril(torch.ones(max_seq_length, max_seq_length, dtype=torch.bool))
         self._kv_causal_mask = causal_mask.unsqueeze(0).repeat(max_batch_size, 1, 1).to(device)
 

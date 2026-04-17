@@ -10,7 +10,7 @@ TRAIN:
   END_EPOCH: 500
   RESUME: ""
   PRETRAINED:
-  PRETRAINED_VAE: ""
+  PRETRAINED_VAE: "experiments/mgpt/DETO_RVQ_wholebody_3_lgvq_whisper/checkpoints/min-how2sign_MPJPE_PA_handepoch=379.ckpt"
 
   OPTIM:
     target: AdamW
@@ -30,7 +30,7 @@ EVAL:
   SPLIT: val
 
 TEST:
-  CHECKPOINTS: experiments/mgpt/${NAME}/checkpoints/last.ckpt
+  CHECKPOINTS: experiments/mgpt/DETO_RVQ_wholebody_3_lgvq_whisper/checkpoints/min-how2sign_MPJPE_PA_handepoch=379.ckpt
   SPLIT: test
   BATCH_SIZE: 16
   REPLICATION_TIMES: 1
@@ -38,7 +38,7 @@ TEST:
 
 DATASET:
   target: mGPT.data.H2S.H2SDataModule
-  CODE_PATH: "TOKENS_h2s_rvq_whole_3"
+  CODE_PATH: "TOKENS_h2s_rvq_whole_3_lgvq_whisper"
   TASK_PATH: ""
   WORD_VERTILIZER_PATH: prepare/deps/glove
   H2S:

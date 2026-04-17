@@ -213,7 +213,10 @@ def load_youtube3d_sample(ann, data_dir, need_pose=True, code_path=None, need_co
 
     fps = ann.get('fps', 24)  # Default to 24 fps if not specified
     if fps > 24:
-        frame_list = sample(frame_list, count=int(24*len(frame_list)/fps))
+        target_count = int(24 * len(frame_list) / fps)
+        if target_count < 4:
+            return None, None, None, None
+        frame_list = sample(frame_list, count=target_count)
     if len(frame_list) < 4:
         return None, None, None, None
 
@@ -222,8 +225,11 @@ def load_youtube3d_sample(ann, data_dir, need_pose=True, code_path=None, need_co
 
     if need_pose:
         for frame_id, frame in enumerate(frame_list):
-            with open(frame, 'rb') as f:
-                poses = pickle.load(f)
+            try:
+                with open(frame, 'rb') as f:
+                    poses = pickle.load(f)
+            except (EOFError, pickle.UnpicklingError, OSError):
+                return None, None, None, None
 
             # YouTube3D format: each value is (1, N), squeeze to (N,)
             pose = np.concatenate([poses[key].squeeze(0) for key in keys], 0)

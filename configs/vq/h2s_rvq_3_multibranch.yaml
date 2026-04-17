@@ -1,0 +1,44 @@
+target: mGPT.archs.mgpt_rvq.RVQVae
+params:
+  # Residual Quantization Parameters
+  num_quantizers: 3                  # Number of residual quantization stages
+  quantizer: 'ema_reset'             # Base quantizer type
+  quantize_dropout_prob: 0.2         # Quantizer dropout probability during training
+  quantize_dropout_cutoff_index: 0   # Always keep first N quantizers
+  shared_codebook: false             # Use separate codebook per stage
+
+  # Codebook Parameters
+  code_num: 512                      # Codebook size per quantizer
+  code_dim: 512                      # Code dimension
+  output_emb_width: 512              # Embedding width
+
+  # Encoder/Decoder Architecture
+  down_t: 2                          # Temporal downsampling layers
+  stride_t: 2                        # Stride for downsampling (4× compression)
+  width: 512                         # Channel width
+  depth: 3                           # ResNet depth
+  dilation_growth_rate: 3            # Dilation growth rate
+  norm: None                         # Normalization type
+  activation: 'relu'                 # Activation function
+
+  # Input Dimension - Single-part input fed into 4-branch encoder
+  nfeats: ${DATASET.NFEATS}          # 133 for H2S
+
+  # Ablation (from parent config)
+  ablation: ${ABLATION}
+
+  # ─────────────────────────────────────────────────────────
+  # Multi-Branch Encoder (HoMi-style, 4 branches)
+  #   body  : [0, 30]
+  #   lhand : [30, 75]
+  #   rhand : [75, 120]
+  #   head  : [120, 133]
+  # See document/MULTI_BRANCH_ENCODER.md for details.
+  # ─────────────────────────────────────────────────────────
+  multi_branch: true
+
+  # Fusion mechanism — pick one:
+  #   'mlp'       : 2-layer MLP on concat              (~1.32M params)
+  #   'temporal'  : Dynamic Temporal Branch Attention  (  ~66K params)
+  #   'dual_axis' : Dual-Axis Selective Fusion         (  ~76K params)
+  fusion_type: dual_axis

@@ -1,7 +1,7 @@
 NAME: DETO_RVQ_wholebody_3_lgvq_youtube  # RVQ-VAE with Language-Guided Codebook Learning on Youtube3D
 ACCELERATOR: "gpu"
 NUM_NODES: 1
-DEVICE: [0]
+DEVICE: [0,1,2]
 
 TRAIN:
   STAGE: vae
@@ -9,8 +9,8 @@ TRAIN:
   BATCH_SIZE: 32
   END_EPOCH: 500
   RESUME: ""
-  PRETRAINED:
-  PRETRAINED_VAE: ""
+  PRETRAINED: experiments/mgpt/DETO_RVQ_wholebody_3_lgvq_youtube/checkpoints/min-youtube3d_MPJPE_PA_handepoch=249.ckpt
+  PRETRAINED_VAE: "experiments/mgpt/DETO_RVQ_wholebody_3_lgvq_youtube/checkpoints/min-youtube3d_MPJPE_PA_handepoch=249.ckpt"
 
   OPTIM:
     target: AdamW
@@ -30,15 +30,15 @@ EVAL:
   SPLIT: val
 
 TEST:
-  CHECKPOINTS: experiments/mgpt/${NAME}/checkpoints/last.ckpt
+  CHECKPOINTS: experiments/mgpt/DETO_RVQ_wholebody_3_lgvq_youtube/checkpoints/min-youtube3d_MPJPE_PA_handepoch=249.ckpt
   SPLIT: test
-  BATCH_SIZE: 16
+  BATCH_SIZE: 32
   REPLICATION_TIMES: 1
   SAVE_PREDICTIONS: true
 
 DATASET:
   target: mGPT.data.H2S.H2SDataModule
-  CODE_PATH: "TOKENS_h2s_rvq_whole_3_lgvq_Youtube3D"
+  CODE_PATH: "/data/hwu/slg_data/Youtube3D/TOKENS_h2s_rvq_whole_3_lgvq_Youtube3D"
   TASK_PATH: ""
   WORD_VERTILIZER_PATH: prepare/deps/glove
   H2S:

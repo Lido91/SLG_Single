@@ -107,12 +107,13 @@ class H2SMotionDatasetVQ(data.Dataset):
             self.ids = self.csv['SENTENCE_NAME'] #[:200]
 
             print(f'{split}--loading how2sign annotations...', len(self.ids))
-            for idx in tqdm(range(len(self.ids))):
-                name = self.ids[idx]
-                if name in bad_how2sign_ids:
+            bad_set = set(bad_how2sign_ids)
+            for row in tqdm(self.csv.itertuples(index=False), total=len(self.csv)):
+                name = row.SENTENCE_NAME
+                if name in bad_set:
                     continue
-                self.all_data.append({'name': name, 'fps': self.csv[self.csv['SENTENCE_NAME']==name]['fps'].item(), 
-                                        'text': self.csv[self.csv['SENTENCE_NAME']==name]['SENTENCE'].item(), 'src': 'how2sign', 'split': split})
+                self.all_data.append({'name': name, 'fps': row.fps,
+                                        'text': row.SENTENCE, 'src': 'how2sign', 'split': split})
             self.h2s_len += len(self.all_data)
         
         if 'csl' in dataset_name:
@@ -173,20 +174,18 @@ class H2SMotionDatasetVQ(data.Dataset):
             youtube3d_csv = pd.read_csv(youtube3d_csv_path)
             youtube3d_csv['DURATION'] = youtube3d_csv['END_REALIGNED'] - youtube3d_csv['START_REALIGNED']
             youtube3d_csv = youtube3d_csv[youtube3d_csv['DURATION'] < 30].reset_index(drop=True)
-            youtube3d_ids = youtube3d_csv['SENTENCE_NAME']
 
-            print(f'{split}--loading youtube3d annotations...', len(youtube3d_ids))
-            for idx in tqdm(range(len(youtube3d_ids))):
-                name = youtube3d_ids[idx]
-                text_val = youtube3d_csv[youtube3d_csv['SENTENCE_NAME'] == name]['SENTENCE'].item()
-                if not isinstance(text_val, str) or pd.isna(text_val):
+            print(f'{split}--loading youtube3d annotations...', len(youtube3d_csv))
+            has_fps_col = 'fps' in youtube3d_csv.columns
+            for row in tqdm(youtube3d_csv.itertuples(index=False), total=len(youtube3d_csv)):
+                name = row.SENTENCE_NAME
+                text_val = row.SENTENCE
+                if not isinstance(text_val, str) or pd.isna(text_val) or (isinstance(text_val, str) and text_val.strip() == ""):
                     text_val = "unknown"
-                elif text_val.strip() == "":
-                    text_val = "unknown"
-                fps_val = youtube3d_csv[youtube3d_csv['SENTENCE_NAME'] == name]['fps'].item() if 'fps' in youtube3d_csv.columns else 24
+                fps_val = row.fps if has_fps_col else 24
                 self.all_data.append({'name': name, 'fps': fps_val,
                                       'text': text_val, 'src': 'youtube3d', 'split': split})
-            self.youtube3d_len = len(youtube3d_ids)
+            self.youtube3d_len = len(youtube3d_csv)
 
         print(f'Data loading done. All: {len(self.all_data)}, How2Sign: {self.h2s_len}, CSL: {self.csl_len}, Phoenix: {self.phoenix_len}, YouTube3D: {self.youtube3d_len}')
 

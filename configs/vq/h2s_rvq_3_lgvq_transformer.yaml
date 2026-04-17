@@ -1,0 +1,49 @@
+target: mGPT.archs.mgpt_rvq_lgvq_transformer.RVQVaeLGVQTransformer
+params:
+  # Residual Quantization Parameters (unchanged from RVQ-LGVQ)
+  num_quantizers: 3
+  quantizer: 'ema_reset'
+  quantize_dropout_prob: 0.2
+  quantize_dropout_cutoff_index: 0
+  shared_codebook: false
+
+  # Codebook Parameters
+  code_num: 512
+  code_dim: 512
+  output_emb_width: 512  # Required by parent RVQVae (unused, overridden)
+
+  # Conv1D params (required by parent RVQVae init, then deleted)
+  down_t: 2
+  stride_t: 2
+  width: 512
+  depth: 3
+  dilation_growth_rate: 3
+  norm: None
+  activation: 'relu'
+
+  # Transformer Encoder/Decoder Parameters (NEW)
+  latent_dim: 512
+  num_latent_tokens: 49
+  patch_size: 4
+  num_layers: 9
+  n_head: 8
+  dropout: 0.1
+  drop_path_rate: 0.1
+
+  # Input Dimension
+  nfeats: ${DATASET.NFEATS}
+
+  # Ablation (from parent config)
+  ablation: ${ABLATION}
+
+  # LG-VQ Language-Guided Parameters
+  clip_model_name: 'ViT-B/32'
+  clip_text_max_len: 30
+  mask_transformer_layers: 2
+  mask_transformer_heads: 4
+  max_motion_len: 128
+  drop_prob: 0.1
+  nce_weight: 0.001
+  mask_weight: 0.01
+  wrs_weight: 0.0001
+  label_smoothing: 0.1

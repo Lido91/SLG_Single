@@ -13,7 +13,7 @@ import torch
 from tqdm import tqdm
 
 # Configuration
-DATA_ROOT = "/data/hwu/slg_data/Youtube3D"
+DATA_ROOT = "/data/hwu/slg_data/Youtube3D_all"
 SPLIT = "train"  # Compute stats from training set only
 OUTPUT_DIR = DATA_ROOT
 

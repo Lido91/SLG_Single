@@ -1,0 +1,37 @@
+target: mGPT.archs.mgpt_rvq_transformer.RVQVaeTransformer
+params:
+  # Residual Quantization Parameters (unchanged)
+  num_quantizers: 3
+  quantizer: 'ema_reset'
+  quantize_dropout_prob: 0.2
+  quantize_dropout_cutoff_index: 0
+  shared_codebook: false
+
+  # Codebook Parameters
+  code_num: 512
+  code_dim: 512
+  output_emb_width: 512  # Required by parent RVQVae init (deleted after)
+
+  # Conv1D params (required by parent init, then deleted)
+  down_t: 2
+  stride_t: 2
+  width: 512
+  depth: 3
+  dilation_growth_rate: 3
+  norm: None
+  activation: 'relu'
+
+  # Transformer Encoder/Decoder Parameters
+  latent_dim: 512
+  num_latent_tokens: 49
+  patch_size: 4
+  num_layers: 9
+  n_head: 8
+  dropout: 0.1
+  drop_path_rate: 0.1
+
+  # Input Dimension
+  nfeats: ${DATASET.NFEATS}
+
+  # Ablation (from parent config)
+  ablation: ${ABLATION}

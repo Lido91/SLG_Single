@@ -1,21 +1,21 @@
 NAME: DETO_RVQ_Hierarchical_3layer_lgvq_whisper_h2s # Speech-driven Hierarchical RVQ-GPT with LGVQ for How2Sign
 ACCELERATOR: "gpu"
 NUM_NODES: 1
-DEVICE: [0,1]
+DEVICE: [0,1,2]
 
 TRAIN:
   STAGE: lm_pretrain  # Hierarchical RVQ-GPT stage (logs per-decoder losses & accuracies)
   NUM_WORKERS: 16
-  BATCH_SIZE: 64  # Reduced due to audio memory requirements
+  BATCH_SIZE: 16 # Reduced due to audio memory requirements
   END_EPOCH: 150
-  RESUME: ""
+  RESUME: "experiments/mgpt/DETO_RVQ_Hierarchical_3layer_lgvq_whisper_h2s"
   PRETRAINED:
-  PRETRAINED_VAE: experiments/mgpt/DETO_RVQ_wholebody_3_lgvq/checkpoints/min-how2sign_MPJPE_PA_handepoch=319.ckpt  # Pretrained LGVQ RVQ-VAE on How2Sign
+  PRETRAINED_VAE: experiments/mgpt/DETO_RVQ_wholebody_3_lgvq_whisper/checkpoints/min-how2sign_MPJPE_PA_handepoch=379.ckpt  # Pretrained LGVQ RVQ-VAE on How2Sign
 
   OPTIM:
     target: AdamW
     params:
-      lr: 1e-4
+      lr: 3e-4
       betas: [0.9, 0.99]
       weight_decay: 0.01
 
@@ -30,16 +30,16 @@ EVAL:
   SPLIT: val
 
 TEST:
-  CHECKPOINTS: experiments/mgpt/${NAME}/checkpoints/last.ckpt
+  CHECKPOINTS: experiments/mgpt/DETO_RVQ_Hierarchical_3layer_lgvq_whisper_h2s/checkpoints/min-how2sign_DTW_MPJPE_PA_lhandepoch=99.ckpt
   SPLIT: test
-  BATCH_SIZE: 12
+  BATCH_SIZE: 32
   REPLICATION_TIMES: 1
   SAVE_PREDICTIONS: true
   MAX_SAMPLES: 500
 
 DATASET:
   target: mGPT.data.H2S.H2SDataModule
-  CODE_PATH: "TOKENS_h2s_rvq_whole_3"  # 3-quantizer tokens for How2Sign
+  CODE_PATH: "TOKENS_h2s_rvq_whole_3_lgvq_whisper"  # 3-quantizer tokens for How2Sign
   TASK_PATH: prepare/instructions/template_pretrain.json
 
   WORD_VERTILIZER_PATH: prepare/deps/glove
@@ -65,7 +65,7 @@ DATASET:
     # Audio path: {AUDIO_DIR}/speech/{split}_wavs/{SENTENCE_NAME}.wav
     AUDIO_DIR: /data/hwu/slg_data/How2Sign
     USE_SPEECH: True
-    PRELOAD_AUDIO: False
+    PRELOAD_AUDIO: True
 
 METRIC:
   TYPE: ["TM2TMetrics"]
@@ -94,12 +94,17 @@ lm:
       embed_dim: 1024
       block_size: 100
       num_layers: 9
+      num_layers_q0: 9
+      num_layers_q1: 6
+      num_layers_q2: 6
       n_head: 16
       dropout: 0.1
       text_encoder_type: null
       speech_encoder_type: whisper-medium
       use_speech: True
       pkeep: 0.5
+      corrupt_ratio: 0.0
+      # q0_decoder_type: transformer
 
 # VQ reference
 vq:

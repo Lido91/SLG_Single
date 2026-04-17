@@ -20,8 +20,20 @@ from .mgpt_rvq_lgvq import RVQVaeLGVQ
 # Speech LG-VQ RVQ-VAE (Speech-Guided Codebook Learning)
 from .mgpt_rvq_lgvq_speech import RVQVaeLGVQSpeech
 
+# Transformer Encoder/Decoder RVQ-VAE (no LGVQ, for testing backbone)
+from .mgpt_rvq_transformer import RVQVaeTransformer
+
+# Transformer Encoder/Decoder RVQ-VAE with LGVQ
+from .mgpt_rvq_lgvq_transformer import RVQVaeLGVQTransformer
+
 # Hierarchical RVQ-GPT
 from .mgpt_rvq_hierarchical import HierarchicalRVQGPT
+
+# Hierarchical RVQ-GPT with Condition Fusion Blocks (CFB-based pre-fusion)
+from .mgpt_rvq_hierarchical_cfb import HierarchicalRVQGPTCFB
+
+# Mogo-Style Hierarchical RVQ-GPT
+from .mgpt_mogo import MogoHierarchicalGPT
 
 # Multi-head Text2VQPoseGPT
 from .mgpt_multihead_t2vqp import Text2VQPoseGPT
@@ -46,11 +58,15 @@ __all__ = [
     'RVQVaeAlign',
     'RVQVaeLGVQ',
     'RVQVaeLGVQSpeech',
+    'RVQVaeTransformer',
+    'RVQVaeLGVQTransformer',
     'HRVQVae',
     'MLM',
     'FSQVae',
     'FSQRVQVae',
     'HierarchicalRVQGPT',
+    'HierarchicalRVQGPTCFB',
+    'MogoHierarchicalGPT',
     'Text2VQPoseGPT',
     'MaskTransformer',
     'ResidualTransformer',

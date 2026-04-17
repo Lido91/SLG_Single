@@ -1,4 +1,4 @@
-NAME: DETO_RVQ_Hierarchical_3layer_lgvq_whisper_youtube # Speech-driven Hierarchical RVQ-GPT with LGVQ for Youtube3D
+NAME: DETO_RVQ_Hierarchical_3layer_lgvq_whisper_youtube_llama # Speech-driven Hierarchical RVQ-GPT with LGVQ for Youtube3D
 ACCELERATOR: "gpu"
 NUM_NODES: 1
 DEVICE: [0,1]
@@ -15,7 +15,7 @@ TRAIN:
   OPTIM:
     target: AdamW
     params:
-      lr: 1e-4
+      lr: 2e-4
       betas: [0.9, 0.99]
       weight_decay: 0.01
 
@@ -30,7 +30,7 @@ EVAL:
   SPLIT: val
 
 TEST:
-  CHECKPOINTS: experiments/mgpt/${NAME}/checkpoints/last.ckpt
+  CHECKPOINTS: experiments/mgpt/DETO_RVQ_Hierarchical_3layer_lgvq_whisper_youtube_llama/checkpoints/min-youtube3d_DTW_MPJPE_PA_lhandepoch=139.ckpt
   SPLIT: test
   BATCH_SIZE: 12
   REPLICATION_TIMES: 1
@@ -39,7 +39,7 @@ TEST:
 
 DATASET:
   target: mGPT.data.H2S.H2SDataModule
-  CODE_PATH: "TOKENS_h2s_rvq_whole_3_lgvq_Youtube3D"  # 3-quantizer tokens for Youtube3D
+  CODE_PATH: "TOKENS_h2s_rvq_whole_3_lgvq_whisper_Youtube3D"  # 3-quantizer tokens for Youtube3D
   TASK_PATH: prepare/instructions/template_pretrain.json
 
   WORD_VERTILIZER_PATH: prepare/deps/glove
@@ -65,7 +65,7 @@ DATASET:
     # Audio path: {AUDIO_DIR}/speech/{split}_wavs/{SENTENCE_NAME}.wav
     AUDIO_DIR: /data/hwu/slg_data/Youtube3D
     USE_SPEECH: True
-    PRELOAD_AUDIO: False
+    PRELOAD_AUDIO: True
 
 METRIC:
   TYPE: ["TM2TMetrics"]
@@ -93,14 +93,18 @@ lm:
       num_vq: 2048
       embed_dim: 1024
       block_size: 100
-      num_layers: 9
+      # num_layers: 9
+      num_layers_q0: 9
+      num_layers_q1: 6
+      num_layers_q2: 6
       n_head: 16
       dropout: 0.1
       text_encoder_type: null
       speech_encoder_type: whisper-medium
       use_speech: True
       pkeep: 0.5
-
+      corrupt_ratio: 0.0
+      # q0_decoder_type: transformer
 # VQ reference
 vq:
   h2s_rvq_3:
